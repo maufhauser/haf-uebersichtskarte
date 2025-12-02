@@ -40,7 +40,7 @@ const AUSTRIA_GEOJSON_FILE = 'bundeslaender.geojson';
 const REGIONS_GEOJSON_FILE = 'regionen.geojson';
 
 /* Colours */
-const COLOR_FORERUNNER = '#487367';
+const COLOR_FORERUNNER = '#21342f';
 const COLOR_FOLLOWER   = '#e9e3d7';
 const COLOR_DEFAULT    = '#6c757d';
 
@@ -84,7 +84,7 @@ function collectCoords(geojson){
 }
 
 /* small style functions */
-function austriaStyle(){ return { color:'#fff', weight:2, fillColor:'#eaeaea', fillOpacity:1, interactive:false }; }
+function austriaStyle(){ return { color:'#fff', weight:2, fillColor:'#e9e3d7', fillOpacity:1, interactive:false }; }
 function regionStyle(feature){
   const t = (feature && feature.properties && feature.properties.type || '').toLowerCase();
   let fill = COLOR_DEFAULT;
