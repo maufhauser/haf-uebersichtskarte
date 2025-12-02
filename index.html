@@ -3,16 +3,21 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>HAF Übersichtskarte — minimal</title>
+  <title>HAF Übersichtskarte — no jump</title>
 
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
   <style>
     html,body{height:100%;margin:0;background:#fff}
-    /* Karte füllt Viewport, kein zusätzlicher Rand */
-    #map{width:100%;height:100vh;display:block;margin:0;padding:0;box-sizing:border-box;background:#fff}
+    /* Karte füllt Viewport, initial versteckt (opacity 0), wird sichtbar sobald ready */
+    #map{width:100%;height:100vh;display:block;margin:0;padding:0;box-sizing:border-box;background:#fff;opacity:0;transition:opacity .18s ease}
+    #map.ready{opacity:1}
+
     /* kleine Legende-Stile (optional) */
     .legend{background:#fff;padding:8px;border-radius:6px;box-shadow:0 1px 6px rgba(0,0,0,.12);font-size:14px}
     .swatch{display:inline-block;width:18px;height:12px;border-radius:2px;margin-right:8px;vertical-align:middle}
+
+    /* Falls attributionControl irgendwo sichtbar bleibt: verstecken */
+    .leaflet-control-attribution{display:none !important}
   </style>
 </head>
 <body>
@@ -20,35 +25,33 @@
 
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script>
-/* Minimal, kompakt und iframe-sicher
-   - keine sichtbare Basemap (transparenter TileLayer)
-   - Klick auf Region öffnet genau einen Link (first match)
-   - tight fit auf Österreich, responsive auf Resize
+/*
+  Behaviour:
+  - Load AUSTRIA GEOJSON first
+  - Create map only after bounds known -> no initial zoom jump
+  - Keep a small CSS fallback (opacity) to prevent flashes
+  - Transparent tilelayer so Leaflet doesn't add extra whitespace
+  - Load regions after map exists
+  - Click on region opens first matching link property (iframe-safe)
 */
 
-/* Dateien */
+/* Files */
 const AUSTRIA_GEOJSON_FILE = 'bundeslaender.geojson';
 const REGIONS_GEOJSON_FILE = 'regionen.geojson';
 
-/* Farben */
+/* Colours */
 const COLOR_FORERUNNER = '#7b8ca0';
 const COLOR_FOLLOWER   = '#a1bdda';
 const COLOR_DEFAULT    = '#6c757d';
 
-/* Karte */
-const map = L.map('map', { minZoom: 6, maxZoom: 13, scrollWheelZoom: true }).setView([47.5,13.3],7);
+/* Link preference */
+const LINK_FIELDS = ['url','website','link','homepage','href','site','portal','web','uri','home','slug'];
 
-/* transparent tilelayer: verhindert Leaflet's extra white-space behavior */
-L.tileLayer('data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8z8AIAgMAnwPf4gAAAABJRU5ErkJggg==', {
-  minZoom: 6, maxZoom: 13, attribution: ''
-}).addTo(map);
+/* Fit settings */
+const MAX_FIT_ZOOM = 13;
+const FIT_PADDING = [0,0];
 
-/* Panes */
-map.createPane('countryPane'); map.getPane('countryPane').style.zIndex = 200;
-map.createPane('regionsPane'); map.getPane('regionsPane').style.zIndex = 650;
-if (map.getPane('tooltipPane')) map.getPane('tooltipPane').style.zIndex = 1200;
-
-/* iframe-safe open (top window) */
+/* helper: open top window (iframe-friendly) */
 function openInTopWindow(url){
   if(!url) return false;
   url = String(url).trim();
@@ -61,76 +64,140 @@ function openInTopWindow(url){
   return true;
 }
 
-/* Styles */
-function austriaStyle(){ return { color:'#fff', weight:2, fillColor:'#eaeaea', fillOpacity:1, interactive:false, pane:'countryPane' }; }
+/* geojson helpers for robust bounds (small helper re-used if needed) */
+function collectCoords(geojson){
+  const pts = [];
+  function walk(g){
+    if(!g) return;
+    const t = g.type;
+    if(t==='Point') pts.push(g.coordinates);
+    else if(t==='LineString' || t==='MultiPoint') g.coordinates.forEach(c=>pts.push(c));
+    else if(t==='Polygon') g.coordinates.forEach(r=>r.forEach(c=>pts.push(c)));
+    else if(t==='MultiLineString') g.coordinates.forEach(ls=>ls.forEach(c=>pts.push(c)));
+    else if(t==='MultiPolygon') g.coordinates.forEach(poly=>poly.forEach(r=>r.forEach(c=>pts.push(c))));
+    else if(t==='GeometryCollection') g.geometries.forEach(gg=>walk(gg));
+  }
+  if(geojson.type==='FeatureCollection') geojson.features.forEach(f=>walk(f.geometry));
+  else if(geojson.type==='Feature') walk(geojson.geometry);
+  else walk(geojson);
+  return pts;
+}
+
+/* small style functions */
+function austriaStyle(){ return { color:'#fff', weight:2, fillColor:'#eaeaea', fillOpacity:1, interactive:false }; }
 function regionStyle(feature){
   const t = (feature && feature.properties && feature.properties.type || '').toLowerCase();
   let fill = COLOR_DEFAULT;
   if(t==='forerunner') fill = COLOR_FORERUNNER;
   if(t==='follower') fill = COLOR_FOLLOWER;
-  return { color:'#fff', weight:2, fillColor:fill, fillOpacity:1, pane:'regionsPane' };
+  return { color:'#fff', weight:2, fillColor:fill, fillOpacity:1 };
 }
 
-/* tight fit helper (uses bounds, sets view to exact zoom) */
-const FIT_PADDING = [0,0];
-function fitToBoundsTight(bounds){
-  if(!bounds || (typeof bounds.isValid==='function' && !bounds.isValid())) return;
-  try{ map.invalidateSize(); }catch(e){}
-  // best zoom to fit without padding
-  const bestZoom = map.getBoundsZoom(bounds, false);
-  const zoomTo = Math.min(bestZoom, map.getMaxZoom ? map.getMaxZoom() : 13);
-  map.setView(bounds.getCenter(), zoomTo, { animate:false });
-  // small fallback
+/* function to do tight fit to bounds (no animation) */
+function fitTightTo(mapInstance, bounds){
+  try{ mapInstance.invalidateSize(); }catch(e){}
+  if(!bounds) return;
+  const bestZoom = mapInstance.getBoundsZoom(bounds, false);
+  const zoomTo = Math.min(bestZoom, MAX_FIT_ZOOM);
+  mapInstance.setView(bounds.getCenter(), zoomTo, { animate:false });
+  // fallback fitBounds for safety in weird layouts
   setTimeout(()=> {
-    try{ map.fitBounds(bounds, { padding: FIT_PADDING, maxZoom: zoomTo, animate:false }); }catch(e){}
+    try{ mapInstance.fitBounds(bounds, { padding: FIT_PADDING, maxZoom: zoomTo, animate:false }); }catch(e){}
   }, 20);
 }
 
-/* load Austria geometry and regions */
-let austriaBounds = null;
-fetch(AUSTRIA_GEOJSON_FILE).then(r=>r.ok? r.json() : Promise.reject(r)).then(data=>{
-  const bl = L.geoJSON(data, { style: austriaStyle }).addTo(map);
-  austriaBounds = bl.getBounds();
-  fitToBoundsTight(austriaBounds);
-  // refit on resize
-  window.addEventListener('resize', () => { if(window.__fit_timeout) clearTimeout(window.__fit_timeout); window.__fit_timeout = setTimeout(()=>fitToBoundsTight(austriaBounds), 160); });
-}).catch(e => console.warn('bundeslaender.geojson load failed', e));
+/* create map AFTER loading austria geojson to avoid jump */
+fetch(AUSTRIA_GEOJSON_FILE)
+  .then(r => { if(!r.ok) throw new Error('load fail'); return r.json(); })
+  .then(austriaGeo => {
+    // compute bounds from geo
+    const tmpLayer = L.geoJSON(austriaGeo); // not added yet
+    const bounds = tmpLayer.getBounds();
 
-/* single-link priority list (first property that exists is opened) */
-const LINK_FIELDS = ['url','website','link','homepage','href','site','portal','web','uri','home','slug'];
+    // now create the map (attributionControl false)
+    const map = L.map('map', { minZoom:6, maxZoom:13, attributionControl:false, scrollWheelZoom:true });
+    // expose globally if other scripts expect window.map
+    window.map = map;
 
-/* load regions (interactive) */
-fetch(REGIONS_GEOJSON_FILE).then(r=>r.ok? r.json() : Promise.reject(r)).then(data=>{
-  L.geoJSON(data, {
-    style: regionStyle,
-    onEachFeature: function(feature, layer){
-      const name = feature.properties && (feature.properties.name || feature.properties.title) || '(Region)';
-      layer.bindTooltip(name, { sticky:true, direction:'auto', pane:'tooltipPane' });
-      layer.on('click', function(){
-        const props = feature.properties || {};
-        for(const k of LINK_FIELDS){
-          if(props[k] && String(props[k]).trim().length){
-            // slug special: if it's just a slug (no protocol/host), open as /slug
-            if(k==='slug'){ openInTopWindow('/' + String(props[k]).trim()); return; }
-            openInTopWindow(props[k]);
-            return;
-          }
-        }
+    // transparent 1x1 tile so Leaflet behaves (no extra white padding), but visually invisible
+    L.tileLayer('data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8z8AIAgMAnwPf4gAAAABJRU5ErkJggg==', {
+      minZoom:6, maxZoom:13, attribution:''
+    }).addTo(map);
+
+    // add panes for z-index control (optional but keeps order)
+    map.createPane('countryPane'); map.getPane('countryPane').style.zIndex = 200;
+    map.createPane('regionsPane'); map.getPane('regionsPane').style.zIndex = 650;
+    if(map.getPane('tooltipPane')) map.getPane('tooltipPane').style.zIndex = 1200;
+
+    // add austria layer for background (non-interactive)
+    const austriaLayer = L.geoJSON(austriaGeo, { style: austriaStyle, pane:'countryPane' }).addTo(map);
+
+    // fit tightly (no jump)
+    fitTightTo(map, bounds);
+
+    // show map (CSS fade-in)
+    try{ document.getElementById('map').classList.add('ready'); }catch(e){}
+
+    /* -- now load interactive regions -- */
+    fetch(REGIONS_GEOJSON_FILE)
+      .then(r2 => { if(!r2.ok) throw new Error('regions load fail'); return r2.json(); })
+      .then(regionGeo => {
+        L.geoJSON(regionGeo, {
+          style: regionStyle,
+          onEachFeature: function(feature, layer){
+            const name = (feature.properties && (feature.properties.name || feature.properties.title)) || '(Region)';
+            layer.bindTooltip(name, { sticky:true, direction:'auto', pane:'tooltipPane' });
+            layer.on('click', function(){
+              const props = feature.properties || {};
+              for(const k of LINK_FIELDS){
+                if(props.hasOwnProperty(k) && props[k] != null && String(props[k]).trim().length){
+                  if(k === 'slug'){ openInTopWindow('/' + String(props[k]).trim()); return; }
+                  openInTopWindow(props[k]);
+                  return;
+                }
+              }
+            });
+          },
+          pane:'regionsPane'
+        }).addTo(map);
+
+        // re-apply tight fit after regions added (keeps final view stable)
+        setTimeout(()=> fitTightTo(map, bounds), 40);
+
+        // re-fit on resize
+        window.addEventListener('resize', () => {
+          if(window.__fit_timeout) clearTimeout(window.__fit_timeout);
+          window.__fit_timeout = setTimeout(()=> fitTightTo(map, bounds), 160);
+        });
+      })
+      .catch(err => {
+        console.warn('regionen.geojson load failed', err);
+        // still add resize handler to keep responsiveness
+        window.addEventListener('resize', () => { if(window.__fit_timeout) clearTimeout(window.__fit_timeout); window.__fit_timeout = setTimeout(()=> fitTightTo(map, bounds), 160); });
       });
-    },
-    pane: 'regionsPane'
-  }).addTo(map);
-}).catch(e => console.warn('regionen.geojson load failed', e));
+
+  })
+  .catch(err => {
+    console.error('bundeslaender.geojson load failed', err);
+    // fallback: create map anyway so page isn't broken (less ideal)
+    const map = L.map('map', { minZoom:6, maxZoom:13, attributionControl:false });
+    window.map = map;
+    L.tileLayer('data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8z8AIAgMAnwPf4gAAAABJRU5ErkJggg==').addTo(map);
+    document.getElementById('map').classList.add('ready');
+  });
 
 /* Minimal legend (optional) */
-const legend = L.control({ position: 'bottomright' });
-legend.onAdd = function(){
-  const d = L.DomUtil.create('div','legend');
-  d.innerHTML = '<div><span class="swatch" style="background:'+COLOR_FORERUNNER+'"></span>Forerunner</div><div><span class="swatch" style="background:'+COLOR_FOLLOWER+'"></span>Follower</div>';
-  return d;
-};
-legend.addTo(map);
-
+(function addLegend(){
+  const legend = L.control({ position: 'bottomright' });
+  legend.onAdd = function(){
+    const d = L.DomUtil.create('div','legend');
+    d.innerHTML = '<div><span class="swatch" style="background:'+COLOR_FORERUNNER+'"></span>Forerunner</div><div><span class="swatch" style="background:'+COLOR_FOLLOWER+'"></span>Follower</div>';
+    return d;
+  };
+  // wait until map exists then add (or try later)
+  const tryAdd = () => { if(window.map) legend.addTo(window.map); else setTimeout(tryAdd, 200); };
+  tryAdd();
+})();
 </script>
 </body>
 </html>
