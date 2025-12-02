@@ -6,9 +6,9 @@
   <title>HAF Übersichtskarte</title>
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
   <style>
-    html,body { height:100%; margin:0; font-family:system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial; }
-    #map { width:100%; height:100vh; }
-    /* Hinweis/Infobox entfernt */
+    /* Weißer Hintergrund anstatt Basemap */
+    html,body { height:100%; margin:0; background:#ffffff; }
+    #map { width:100%; height:100vh; background:#ffffff; } /* ensure white background */
     .legend { background: white; padding:8px 10px; border-radius:6px; box-shadow:0 1px 6px rgba(0,0,0,0.15); font-size:14px; }
     .legend .item { display:flex; align-items:center; gap:8px; margin-bottom:6px; }
     .legend .swatch { width:18px; height:12px; border-radius:2px; display:inline-block; }
@@ -24,16 +24,22 @@
 const REGIONS_GEOJSON_FILE = 'regionen.geojson';        // interaktive Regionen
 const AUSTRIA_GEOJSON_FILE = 'bundeslaender.geojson';  // Hintergrund (komplettes Österreich)
 
-/* Karte: kein TileLayer (Hintergrundkarte ausgeblendet) */
-const map = L.map('map', { minZoom: 6, maxZoom: 13, scrollWheelZoom: true }).setView([47.5, 13.3], 7);
-
 /* Farben */
 const COLOR_FORERUNNER = "#7b8ca0";
 const COLOR_FOLLOWER   = "#a1bdda";
 const COLOR_DEFAULT    = "#6c757d";
 
-/* Link-Felder (Prüfreihenfolge) */
+/* Link candidates */
 const LINK_CANDIDATES = ['url','website','link','homepage','href','site','website_url','portal','web','uri','home'];
+
+/* Karte: keine Basemap, Hintergrund weiß */
+const map = L.map('map', { minZoom: 6, maxZoom: 13, scrollWheelZoom: true }).setView([47.5,13.3],7);
+
+/* Create panes so country is behind regions */
+map.createPane('countryPane');
+map.getPane('countryPane').style.zIndex = 200;  // low: under regions
+map.createPane('regionsPane');
+map.getPane('regionsPane').style.zIndex = 650;  // higher: above country
 
 /* Helpers */
 function openLink(url) {
@@ -45,7 +51,16 @@ function openLink(url) {
   return true;
 }
 
-/* Region style: voll gefüllt + weiße Boundary (weight 5 — anpassbar) */
+/* Styles: weights adjusted (country 2, regions 3) */
+function austriaStyle(feature) {
+  return {
+    color: '#ffffff',      // white boundary
+    weight: 2,             // stroke width for country borders
+    fillColor: '#e1e1e1',  // light gray fill
+    fillOpacity: 1,
+    interactive: false
+  };
+}
 function styleByType(feature) {
   const t = (feature.properties && feature.properties.type || '').toLowerCase();
   let fill = COLOR_DEFAULT;
@@ -53,39 +68,29 @@ function styleByType(feature) {
   if (t === 'follower')   fill = COLOR_FOLLOWER;
   return {
     color: '#ffffff',      // white boundary
-    weight: 5,             // stroke width (px) — du kannst hier testen/ändern
+    weight: 3,             // stroke width for regions
     fillColor: fill,
-    fillOpacity: 1,        // voll gefüllt
-    className: 'region-polygon'
-  };
-}
-
-/* Austria style (hellgrau fill + white boundary) */
-function austriaStyle(feature) {
-  return {
-    color: '#ffffff',      // white boundary
-    weight: 5,             // stroke width for country borders (px) — anpassen falls nötig
-    fillColor: '#e1e1e1',  // light gray fill
     fillOpacity: 1,
-    interactive: false
+    className: 'region-polygon',
+    pane: 'regionsPane'
   };
 }
 
-/* --- Load Austria (bundeslaender) first, fit to its bounds --- */
+/* --- Load Austria (country) into countryPane and fit bounds --- */
 let austriaBounds = null;
 fetch(AUSTRIA_GEOJSON_FILE)
   .then(r => { if (!r.ok) throw new Error('Fehler beim Laden der Bundesländer: ' + r.status); return r.json(); })
   .then(data => {
     const bl = L.geoJSON(data, {
       style: austriaStyle,
-      interactive: false
+      interactive: false,
+      pane: 'countryPane'
     }).addTo(map);
     try {
       austriaBounds = bl.getBounds();
       if (austriaBounds && austriaBounds.isValid && !austriaBounds.isEmpty()) {
         map.fitBounds(austriaBounds, { padding: [20,20] });
       }
-      // ensure it stays visible on resize
       window.addEventListener('resize', () => {
         setTimeout(()=> {
           map.invalidateSize();
@@ -101,18 +106,18 @@ fetch(AUSTRIA_GEOJSON_FILE)
 /* --- Regions (interactive) --- */
 window.regionsLayer = null;
 
+/* onEachFeature */
 function onEachRegion(feature, layer) {
   const type = (feature.properties && feature.properties.type || '').toLowerCase();
   const name = (feature.properties && feature.properties.name) ? feature.properties.name : '(kein Name)';
   let prefix = '';
   if (type === 'forerunner') prefix = 'Forerunner-Region ';
   else if (type === 'follower') prefix = 'Follower-Region ';
-  // tooltip without colon as requested
-  layer.bindTooltip(prefix + name, { sticky: true, direction: 'auto' });
+  layer.bindTooltip(prefix + name, { sticky:true, direction:'auto' });
 
   layer.on({
     mouseover(e) {
-      e.target.setStyle({ weight: 6, fillOpacity: 1 }); // slightly emphasize on hover
+      e.target.setStyle({ weight: 4, fillOpacity: 1 });
       if (!L.Browser.ie && !L.Browser.opera && !L.Browser.edge) e.target.bringToFront();
     },
     mouseout(e) {
@@ -129,6 +134,16 @@ function onEachRegion(feature, layer) {
       if (e.target && e.target.getBounds) map.fitBounds(e.target.getBounds(), { padding: [20,20] });
     }
   });
+}
+
+/* ensure region layer draws into regionsPane explicitly when creating */
+function createRegionsLayer(data) {
+  // ensure each feature uses region pane (styleByType sets pane via class; here we also set layerPane)
+  window.regionsLayer = L.geoJSON(data, {
+    style: styleByType,
+    onEachFeature: onEachRegion,
+    pane: 'regionsPane'
+  }).addTo(map);
 }
 
 /* enforce pointer-events on regions only */
@@ -206,9 +221,9 @@ fetch(REGIONS_GEOJSON_FILE)
   .then(r => { if (!r.ok) throw new Error('Fehler beim Laden der Regionen: ' + r.status); return r.json(); })
   .then(data => {
     if (!data || !data.features) throw new Error('Keine Features in Regionen gefunden');
-    window.regionsLayer = L.geoJSON(data, { style: styleByType, onEachFeature: onEachRegion }).addTo(map);
+    createRegionsLayer(data);
 
-    // do not override austriaBounds; ensure map size correct
+    // ensure map sizing
     setTimeout(()=>map.invalidateSize(), 200);
 
     // apply pointer-events & fallback
@@ -220,7 +235,7 @@ fetch(REGIONS_GEOJSON_FILE)
       attachDomFallbackToRegions();
     });
 
-    // MutationObserver on overlay pane
+    // MutationObserver on overlay-pane
     const overlay = document.querySelector('.leaflet-pane.leaflet-overlay-pane');
     if (overlay) {
       const mo = new MutationObserver(() => {
