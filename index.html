@@ -3,206 +3,150 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>HAF Übersichtskarte</title>
-
-  <!-- Leaflet CSS -->
-  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
-
+  <title>HAF Übersichts-Karte (mit Regionen)</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-sA+e2k5p7kG8tn5x2Q5q4w6k0Kk7m0z2v5wQe1p5mZU=" crossorigin=""/>
   <style>
-    html,body { height:100%; margin:0; font-family:system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial; }
-    #map { width:100%; height:100vh; } /* volle Höhe der Seite */
-    .legend { background: white; padding:8px 10px; border-radius:6px; box-shadow:0 1px 6px rgba(0,0,0,0.15); font-size:14px; }
-    .legend .item { display:flex; align-items:center; gap:8px; margin-bottom:6px; }
-    .legend .swatch { width:18px; height:12px; border-radius:2px; display:inline-block; }
-    /* sichtbare Hover-Kante */
-    .region-hover { weight:3 !important; }
-    /* pointer-cursor für interaktive Regionen */
-    .leaflet-interactive { cursor: pointer; }
-    /* kleine responsive Verbesserungen */
-    @media (max-width:700px){
-      .legend { font-size:13px; padding:6px 8px; }
+    html,body,#map { height:100%; margin:0; padding:0 }
+    .info-box {
+      position: absolute;
+      left: 10px;
+      top: 10px;
+      z-index: 1000;
+      background: rgba(255,255,255,0.9);
+      padding: 8px 12px;
+      border-radius: 6px;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+      font-family: Arial, Helvetica, sans-serif;
+      font-size: 14px;
     }
+    /* class added to vector SVG path elements so cursor shows pointer */
+    .region-cursor { cursor: pointer; }
   </style>
 </head>
 <body>
+  <div id="map"></div>
+  <div class="info-box" id="infobox">Bewege die Maus über eine Region</div>
 
-<div id="map" role="application" aria-label="Interaktive Übersichtskarte"></div>
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-o9N1j7k0Xgqk0Lr2Qm3rQ9Qftw0+6qa1G6sZq3c6zEo=" crossorigin=""></script>
+  <script>
+    // --- Basis-Map ---
+    const map = L.map('map').setView([48.2, 16.37], 8); // Mittig auf Österreich; passe an falls nötig
 
-<!-- Leaflet JS -->
-<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-<script>
-/* ===========================
-   Konfiguration / Dateinamen
-   =========================== */
-const REGIONS_GEOJSON_FILE = 'regionen.geojson';        // muss im selben Ordner liegen
-const AUSTRIA_GEOJSON_FILE = 'bundeslaender.geojson';  // muss im selben Ordner liegen
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      maxZoom: 19,
+      attribution: '© OpenStreetMap'
+    }).addTo(map);
 
-/* Farben */
-const COLOR_FORERUNNER = "#d9534f"; // rot-ish
-const COLOR_FOLLOWER   = "#0275d8"; // blau-ish
-const COLOR_DEFAULT    = "#6c757d"; // grau
+    // Infobox (oben links)
+    const infoBox = document.getElementById('infobox');
 
-/* Karte initialisieren */
-const map = L.map('map', {
-  minZoom: 6,
-  maxZoom: 13,
-  scrollWheelZoom: true
-}).setView([47.5, 13.3], 7);
+    // --- GeoJSON laden: versuche mehrere mögliche Dateinamen ---
+    const candidateFiles = [
+      './regionen.geojson',
+      './regionen.json',
+      './regionen',
+      './data/regionen.geojson',
+      './data/regionen.json'
+    ];
 
-/* Basemap */
-L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-  attribution: '&copy; OpenStreetMap contributors'
-}).addTo(map);
+    async function loadFirstAvailable(candidates) {
+      for (const path of candidates) {
+        try {
+          const res = await fetch(path);
+          if (!res.ok) throw new Error('not ok');
+          const data = await res.json();
+          console.log('GeoJSON geladen von', path);
+          return data;
+        } catch (e) {
+          // ignore and try next
+          console.log('Ladeversuch fehlgeschlagen für', path, e.message);
+        }
+      }
+      throw new Error('Keine GeoJSON-Datei gefunden. Bitte prüfe den Pfad zu den Regionen-Dateien.');
+    }
 
-/* Style-Funktion (farbe nach properties.type) */
-function styleByType(feature) {
-  const t = (feature.properties && feature.properties.type || "").toLowerCase();
-  let fill = COLOR_DEFAULT;
-  if (t === 'forerunner') fill = COLOR_FORERUNNER;
-  if (t === 'follower')   fill = COLOR_FOLLOWER;
-  return {
-    color: "#ffffff",
-    weight: 1,
-    fillColor: fill,
-    fillOpacity: 0.65,
-    dashArray: '',
-    // className sorgt für pointer cursor (Leaflet fügt 'leaflet-interactive' hinzu)
-    className: 'region-polygon'
-  };
-}
+    function style(feature) {
+      return {
+        color: '#333',
+        weight: 1,
+        fillColor: '#ccccff',
+        fillOpacity: 0.6
+      };
+    }
 
-/* Variablen für Layer, damit resetStyle möglich ist */
-let regionsLayer = null;
-
-/* Interaktion: Tooltip on hover, highlight, click -> URL */
-function onEachRegion(feature, layer) {
-  // Tooltip (Mouseover zeigt Namen)
-  const name = (feature.properties && feature.properties.name) ? feature.properties.name : 'Region';
-  layer.bindTooltip(name, {sticky: true, direction: 'auto'});
-
-  layer.on({
-    mouseover: function(e) {
-      const target = e.target;
-      target.setStyle({
-        weight: 3,
-        fillOpacity: 0.85
-      });
-      // bring to front for non-IE browsers
+    function highlightFeature(e) {
+      const layer = e.target;
+      layer.setStyle({ weight: 3, color: '#0066cc' });
       if (!L.Browser.ie && !L.Browser.opera && !L.Browser.edge) {
-        target.bringToFront();
-      }
-    },
-    mouseout: function(e) {
-      // Reset to original style
-      if (regionsLayer) regionsLayer.resetStyle(e.target);
-    },
-    click: function(e) {
-      const props = feature.properties || {};
-      // Prefer absolute url in properties.url; if absent, try slug or name -> fallback: zoom
-      if (props.url && props.url.length > 0) {
-        // Direkt navigieren (gleiche Seite). Wenn neue Seite gewünscht: use window.open(props.url, '_blank')
-        window.location.href = props.url;
-      } else if (props.slug) {
-        window.location.href = '/' + props.slug;
-      } else {
-        // kein Link vorhanden: zoome zur Region
-        map.fitBounds(e.target.getBounds(), {padding: [20,20]});
+        layer.bringToFront();
       }
     }
-  });
-}
 
-/* GeoJSON laden (Regions) */
-fetch(REGIONS_GEOJSON_FILE)
-  .then(resp => {
-    if (!resp.ok) throw new Error('Fehler beim Laden der Regionen-Datei: ' + resp.status);
-    return resp.json();
-  })
-  .then(data => {
-    // Falls properties fehlen, loggen (nur Debug)
-    if (!data || !data.features) {
-      console.error('Keine Features in Regionen-GeoJSON gefunden.');
-      return;
+    function resetHighlight(e) {
+      geojsonLayer.resetStyle(e.target);
     }
 
-    // (Optional) Normalize: ensure each feature has name/type/url — aber wir vertrauen der Datei
-    regionsLayer = L.geoJSON(data, {
-      style: styleByType,
-      onEachFeature: onEachRegion
-    }).addTo(map);
-
-    // Fit to regions
-    try {
-      const b = regionsLayer.getBounds();
-      if (b.isValid && !b.isEmpty()) map.fitBounds(b, {padding:[30,30]});
-    } catch(e){/* ignore */}
-  })
-  .catch(err => {
-    console.error(err);
-    // Nutzerhinweis auf der Seite (freundlich)
-    const wrapper = document.getElementById('map');
-    const note = document.createElement('div');
-    note.style.padding = '20px';
-    note.style.color = '#a00';
-    note.style.background = '#fff';
-    note.style.maxWidth = '640px';
-    note.style.margin = '20px auto';
-    note.style.borderRadius = '6px';
-    note.innerText = 'Die Regions-Datei konnte nicht geladen werden. Bitte prüfe, ob "regionen.geojson" im selben Ordner liegt.';
-    wrapper.appendChild(note);
-  });
-
-/* Optional: Bundesländer-Grenzen als Outline (unschädlich, transparent innen) */
-fetch(AUSTRIA_GEOJSON_FILE)
-  .then(r => r.json())
-  .then(d => {
-    L.geoJSON(d, {
-      style: function(){ return {color: '#333', weight: 1, fillOpacity: 0}; }
-    }).addTo(map);
-  }).catch(()=>{/* ignore */});
-
-/* Legend */
-const legend = L.control({position:'bottomright'});
-legend.onAdd = function(){
-  const div = L.DomUtil.create('div','legend');
-  div.innerHTML = '<strong>Legende</strong>';
-  const add = (color,label) => {
-    const item = document.createElement('div');
-    item.className = 'item';
-    const sw = document.createElement('span');
-    sw.className = 'swatch';
-    sw.style.background = color;
-    const txt = document.createElement('span');
-    txt.textContent = label;
-    item.appendChild(sw);
-    item.appendChild(txt);
-    div.appendChild(item);
-  };
-  add(COLOR_FORERUNNER, 'Forerunner-Region');
-  add(COLOR_FOLLOWER, 'Follower-Region');
-  return div;
-};
-legend.addTo(map);
-
-/* Optional: keyboard accessibility for features (tabindex + enter to open) */
-/* Leaflet doesn't add focusable elements for polygons by default; we add a simple keyboard handler:
-   - on map click, set lastClickedLayer; below we also listen for keydown Enter and open link if layer under mouse exists.
-   This is a minimal accessibility help — full a11y requires extra elements outside canvas.
-*/
-document.addEventListener('keydown', function(e){
-  if (e.key === 'Enter') {
-    // try to find any layer at center of map and open its url — best-effort
-    if (!regionsLayer) return;
-    const center = map.getCenter();
-    const px = map.latLngToContainerPoint(center);
-    map.eachLayer(function(layer){
-      if (layer.feature && layer.getBounds && layer.getBounds().contains(center)) {
-        const props = layer.feature.properties || {};
-        if (props.url) window.location.href = props.url;
+    // onEachFeature: mouseover zeigt name, mouseout zurück, click öffnet URL
+    function onEachFeature(feature, layer) {
+      // set pointer cursor (add class to SVG path element if available)
+      if (layer.getElement) {
+        const el = layer.getElement();
+        if (el) el.classList.add('region-cursor');
       }
-    });
-  }
-});
-</script>
+
+      // mouseover -> show tooltip & update infobox and highlight
+      layer.on({
+        mouseover: function (e) {
+          highlightFeature(e);
+          const name = (feature.properties && feature.properties.name) ? feature.properties.name : 'Unbenannte Region';
+          // bind a sticky tooltip so it follows the mouse
+          layer.bindTooltip(name, { sticky: true }).openTooltip(e.latlng);
+          infoBox.textContent = name;
+        },
+        mouseout: function (e) {
+          // remove tooltip & reset style
+          layer.closeTooltip();
+          resetHighlight(e);
+          infoBox.textContent = 'Bewege die Maus über eine Region';
+        },
+        click: function (e) {
+          const url = feature.properties && feature.properties.url ? feature.properties.url : null;
+          if (url) {
+            // öffne Ziel in neuem Tab - passe an wenn du im gleichen Tab öffnen willst
+            window.open(url, '_blank');
+          } else {
+            // Falls keine URL vorhanden ist, zoome einfach auf die Region
+            map.fitBounds(layer.getBounds());
+          }
+        }
+      });
+
+      // optional: beschriftung dauerhaft anzeigen (z. B. centroid) - auskommentiert
+      // if (feature.properties && feature.properties.name) {
+      //   const center = layer.getBounds().getCenter();
+      //   L.marker(center, { interactive:false }).bindTooltip(feature.properties.name, {permanent:true, direction:'center', className:'label'}).addTo(map);
+      // }
+    }
+
+    let geojsonLayer = null;
+
+    (async function(){
+      try {
+        const data = await loadFirstAvailable(candidateFiles);
+        geojsonLayer = L.geoJSON(data, {
+          style: style,
+          onEachFeature: onEachFeature
+        }).addTo(map);
+
+        // zoom to layer bounds
+        map.fitBounds(geojsonLayer.getBounds());
+
+      } catch (err) {
+        console.error(err);
+        infoBox.textContent = 'Fehler: ' + err.message;
+      }
+    })();
+
+  </script>
 </body>
 </html>
