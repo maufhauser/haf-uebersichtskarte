@@ -177,6 +177,74 @@ fetch(AUSTRIA_GEOJSON_FILE)
   .then(r => { if (!r.ok) throw new Error('Fehler beim Laden der Bundesländer: ' + r.status); return r.json(); })
   .then(data => {
     const bl = L.geoJSON(data, { style: austriaStyle, interactive: false, pane: 'countryPane' }).addTo(map);
+    // ===== DEBUG: RAW BOUNDS & COORD EXTREMES =====
+
+// Leaflet-interne Bounds
+const rawBounds = bl.getBounds();
+console.log("RAW Leaflet Bounds:", rawBounds.toBBoxString());
+
+// Extract all coordinates
+function collectCoords(gj) {
+  const pts = [];
+  function walk(g){
+    if (!g) return;
+    if (g.type === "Point") pts.push(g.coordinates);
+    else if (g.type === "LineString" || g.type === "MultiPoint")
+      g.coordinates.forEach(c => pts.push(c));
+    else if (g.type === "Polygon")
+      g.coordinates.forEach(ring => ring.forEach(c => pts.push(c)));
+    else if (g.type === "MultiLineString")
+      g.coordinates.forEach(ls => ls.forEach(c => pts.push(c)));
+    else if (g.type === "MultiPolygon")
+      g.coordinates.forEach(poly => poly.forEach(ring => ring.forEach(c => pts.push(c))));
+    else if (g.type === "GeometryCollection")
+      g.geometries.forEach(geom => walk(geom));
+  }
+  if (gj.type === "FeatureCollection") gj.features.forEach(f => walk(f.geometry));
+  else if (gj.type === "Feature") walk(gj.geometry);
+  else walk(gj);
+  return pts;
+}
+
+const coords = collectCoords(data);
+console.log("Total coordinate points:", coords.length);
+
+// Numeric min/max
+const lons = coords.map(c => c[0]).filter(Number.isFinite).sort((a,b)=>a-b);
+const lats = coords.map(c => c[1]).filter(Number.isFinite).sort((a,b)=>a-b);
+
+console.log("Longitude min/max:", lons[0], lons[lons.length - 1]);
+console.log("Latitude  min/max:", lats[0], lats[lats.length - 1]);
+
+// ===== DEBUG: ROBUST (percentile) BOUNDS =====
+
+function pct(arr, p) {
+  const idx = (p/100) * (arr.length - 1);
+  const lo = Math.floor(idx), hi = Math.ceil(idx);
+  if (lo === hi) return arr[lo];
+  const w = idx - lo;
+  return arr[lo]*(1-w) + arr[hi]*w;
+}
+
+const LO = 2.5, HI = 97.5;
+const robustMinLon = pct(lons, LO);
+const robustMaxLon = pct(lons, HI);
+const robustMinLat = pct(lats, LO);
+const robustMaxLat = pct(lats, HI);
+
+const robustBounds = L.latLngBounds(
+  [robustMinLat, robustMinLon],
+  [robustMaxLat, robustMaxLon]
+);
+
+console.log("ROBUST Bounds (2.5% trimmed):", robustBounds.toBBoxString());
+
+// Mark what we will *actually* use just for debugging (no functional change)
+console.log("=== BOUNDS DEBUG SUMMARY ===");
+console.log("RAW (Leaflet): ", rawBounds.toBBoxString());
+console.log("ROBUST (trim):  ", robustBounds.toBBoxString());
+console.log("===========================");
+
     try {
       // robust bounds calculation (removes coordinate outliers)
       const robustBounds = computeRobustBounds(data);
