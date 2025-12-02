@@ -1,87 +1,202 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="de">
 <head>
-<meta charset="utf-8" />
-<title>HAF Übersichtskarte</title>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>HAF Übersichtskarte</title>
 
-<link
-  rel="stylesheet"
-  href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
-/>
+  <!-- Leaflet CSS -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
 
-<style>
-  html, body {
-    margin: 0;
-    padding: 0;
-    height: 100%;
-    width: 100%;
-  }
-  #map {
-    width: 100%;
-    height: 100%;
-  }
-  .clickable-region {
-    cursor: pointer;
-  }
-</style>
-
+  <style>
+    /* Grundlayout */
+    html,body { height:100%; margin:0; font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial; }
+    #map { width:100%; height:88vh; min-height:480px; }
+    header { padding:12px 16px; background:#fff; box-shadow:0 1px 4px rgba(0,0,0,0.06); z-index:1000; }
+    .wrap { max-width:1200px; margin:0 auto; display:flex; align-items:center; gap:12px; }
+    h1 { font-size:1.1rem; margin:0; }
+    /* Legend */
+    .legend { background:white; padding:8px 10px; border-radius:6px; box-shadow:0 1px 6px rgba(0,0,0,0.12); font-size:14px; line-height:1.4; }
+    .legend .row { display:flex; align-items:center; gap:8px; margin-top:6px; }
+    .swatch { width:18px; height:12px; border-radius:2px; display:inline-block; border:1px solid rgba(0,0,0,0.06); }
+    /* mobile tweaks */
+    @media (max-width:640px) {
+      h1 { font-size:1rem; }
+    }
+    /* make features pointer cursor */
+    .clickable-region { cursor:pointer; }
+  </style>
 </head>
 <body>
 
-<div id="map"></div>
+<header>
+  <div class="wrap">
+    <h1>HAF Übersichtskarte — Regionen (Montafon, Pongau, Gesäuse, Hermagor, Murau)</h1>
+    <div style="flex:1"></div>
+    <div class="legend" id="map-legend" aria-hidden="true">
+      <div><strong>Legende</strong></div>
+      <div class="row"><span class="swatch" style="background:#d9534f"></span><span>Forerunner</span></div>
+      <div class="row"><span class="swatch" style="background:#0275d8"></span><span>Follower</span></div>
+    </div>
+  </div>
+</header>
 
+<div id="map" role="region" aria-label="Interaktive Karte"></div>
+
+<!-- Leaflet JS -->
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 
 <script>
-// ------- Lade GeoJSON Dateien aus dem gleichen Repo -------
-Promise.all([
-  fetch("regionen.geojson").then(r => r.json()),
-  fetch("bundeslaender.geojson").then(r => r.json())
-]).then(([REGIONS, AUSTRIA]) => {
+/*
+  index.html für haf-uebersichtskarte
+  Annahme: regionen.geojson und bundeslaender.geojson liegen im gleichen Ordner (docs/)
+*/
 
-  const COLOR_FORERUNNER = "#d9534f";
-  const COLOR_FOLLOWER = "#0275d8";
-  const COLOR_DEFAULT = "#6c757d";
+(function(){
+  // relative Pfade (im selben Verzeichnis wie index.html)
+  const URL_REGIONS = './regionen.geojson';
+  const URL_AUSTRIA = './bundeslaender.geojson';
 
-  const map = L.map("map").setView([47.5, 13.3], 7);
+  // Farben
+  const COLOR_FORERUNNER = '#d9534f';
+  const COLOR_FOLLOWER   = '#0275d8';
+  const COLOR_DEFAULT    = '#6c757d';
 
-  L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
-    attribution: "© OpenStreetMap"
+  // Erstelle Karte
+  const map = L.map('map', {
+    minZoom: 6,
+    maxZoom: 13,
+    scrollWheelZoom: true
+  }).setView([47.5, 13.3], 7);
+
+  // Basemap
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    attribution: '&copy; OpenStreetMap contributors'
   }).addTo(map);
 
-  function regionStyle(feature) {
-    const t = feature.properties.type;
+  // Popup-Instanz, die wir wiederverwenden (vermeidet viele offene Popups)
+  const hoverPopup = L.popup({closeButton:false, offset: L.point(0,-10), autoClose: true, closeOnClick: false});
+
+  // Style-Funktion
+  function styleByFeature(feature) {
+    const t = (feature && feature.properties && (feature.properties.type || '')).toLowerCase();
+    let fill = COLOR_DEFAULT;
+    if (t === 'forerunner') fill = COLOR_FORERUNNER;
+    if (t === 'follower')   fill = COLOR_FOLLOWER;
     return {
-      color: "#ffffff",
+      color: '#ffffff',
       weight: 1,
-      fillColor:
-        t === "forerunner" ? COLOR_FORERUNNER :
-        t === "follower" ? COLOR_FOLLOWER :
-        COLOR_DEFAULT,
-      fillOpacity: 0.6,
-      className: "clickable-region"
+      fillColor: fill,
+      fillOpacity: 0.65,
+      className: 'clickable-region'
     };
   }
 
-  let regionsLayer = L.geoJSON(REGIONS, {
-    style: regionStyle,
-    onEachFeature: (feature, layer) => {
-      layer.bindTooltip(feature.properties.name);
-      layer.on("click", () => {
-        window.location.href = feature.properties.url;
-      });
-    }
-  }).addTo(map);
+  // onEachFeature
+  function onEachRegion(feature, layer) {
+    const name = (feature.properties && feature.properties.name) ? feature.properties.name : 'Region';
+    // Tooltip (kleines Label am Cursor)
+    layer.bindTooltip(name, {sticky:true, direction:'auto'});
 
-  map.fitBounds(regionsLayer.getBounds());
+    layer.on({
+      mouseover: function(e){
+        // stärkere Hervorhebung
+        e.target.setStyle({weight:3, fillOpacity:0.85});
+        if (!L.Browser.ie && !L.Browser.opera && !L.Browser.edge) {
+          e.target.bringToFront();
+        }
+        // Popup am Mausstandort mit Namen (optional)
+        hoverPopup
+          .setLatLng(e.latlng)
+          .setContent('<strong>' + escapeHtml(name) + '</strong>')
+          .openOn(map);
+      },
+      mousemove: function(e){
+        // Popup mitziehen
+        hoverPopup.setLatLng(e.latlng);
+      },
+      mouseout: function(e){
+        // Stil zurücksetzen
+        regionsLayer.resetStyle(e.target);
+        map.closePopup(hoverPopup);
+      },
+      click: function(e){
+        const url = feature.properties && feature.properties.url;
+        if (url) {
+          // Öffne in gleichem Tab
+          window.location.href = url;
+        } else {
+          // falls keine URL -> zoome auf Feature
+          map.fitBounds(e.target.getBounds(), {padding:[20,20]});
+        }
+      }
+    });
+  }
 
-  L.geoJSON(AUSTRIA, {
-    style: { color: "#333", weight: 1, fillOpacity: 0 }
-  }).addTo(map);
+  // Hilfsfunktion: sichere HTML-Escape für Popup-Content
+  function escapeHtml(s){
+    return String(s).replace(/[&<>"']/g, function(m){ return ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[m]; });
+  }
 
-});
+  // Regionen-Layer (wird per fetch geladen)
+  let regionsLayer = null;
+  fetch(URL_REGIONS)
+    .then(resp => {
+      if (!resp.ok) throw new Error('Fehler Laden Regionen: ' + resp.statusText);
+      return resp.json();
+    })
+    .then(geojson => {
+      regionsLayer = L.geoJSON(geojson, {
+        style: styleByFeature,
+        onEachFeature: onEachRegion
+      }).addTo(map);
+
+      // Wenn Features vorhanden: auf sie zoomen
+      try {
+        const b = regionsLayer.getBounds();
+        if (b && b.isValid && !b.isEmpty()) {
+          map.fitBounds(b, {padding:[30,30]});
+        }
+      } catch(e){ console.warn(e); }
+    })
+    .catch(err => {
+      console.error(err);
+      showLoadError('Regionen konnten nicht geladen werden. Prüfe regionen.geojson.');
+    });
+
+  // Österreich boundaries (untergrund)
+  fetch(URL_AUSTRIA)
+    .then(resp => {
+      if (!resp.ok) throw new Error('Fehler Laden Austria: ' + resp.statusText);
+      return resp.json();
+    })
+    .then(geojson => {
+      L.geoJSON(geojson, {
+        style: function(){ return {color:'#333', weight:1, fillOpacity:0}; }
+      }).addTo(map);
+    })
+    .catch(err => {
+      console.warn('Österreich-GEOJSON konnte nicht geladen werden:', err);
+    });
+
+  // Fehlermeldung auf der Karte anzeigen
+  function showLoadError(text) {
+    const el = L.control({position:'topright'});
+    el.onAdd = function(){
+      const d = L.DomUtil.create('div','legend');
+      d.innerHTML = '<strong style="color:#a00">Fehler</strong><div style="font-size:13px;">' + escapeHtml(text) + '</div>';
+      return d;
+    };
+    el.addTo(map);
+  }
+
+  // Accessibility: close popup on escape
+  document.addEventListener('keydown', function(e){
+    if (e.key === 'Escape') map.closePopup(hoverPopup);
+  });
+
+})();
 </script>
 
 </body>
 </html>
-
