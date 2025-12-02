@@ -4,149 +4,29 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>HAF Übersichts-Karte (mit Regionen)</title>
-  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-sA+e2k5p7kG8tn5x2Q5q4w6k0Kk7m0z2v5wQe1p5mZU=" crossorigin=""/>
+
+  <!-- Leaflet CSS (ohne integrity-Attribute, vermeidet CDN Hash-Probleme) -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+
   <style>
-    html,body,#map { height:100%; margin:0; padding:0 }
+    /* Robuste Vollseiten-Map-Styles */
+    html, body {
+      height: 100%;
+      margin: 0;
+      padding: 0;
+    }
+    #map {
+      position: absolute;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+    }
     .info-box {
       position: absolute;
       left: 10px;
       top: 10px;
       z-index: 1000;
-      background: rgba(255,255,255,0.9);
+      background: rgba(255,255,255,0.95);
       padding: 8px 12px;
       border-radius: 6px;
-      box-shadow: 0 2px 8px rgba(0,0,0,0.15);
-      font-family: Arial, Helvetica, sans-serif;
-      font-size: 14px;
-    }
-    /* class added to vector SVG path elements so cursor shows pointer */
-    .region-cursor { cursor: pointer; }
-  </style>
-</head>
-<body>
-  <div id="map"></div>
-  <div class="info-box" id="infobox">Bewege die Maus über eine Region</div>
-
-  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-o9N1j7k0Xgqk0Lr2Qm3rQ9Qftw0+6qa1G6sZq3c6zEo=" crossorigin=""></script>
-  <script>
-    // --- Basis-Map ---
-    const map = L.map('map').setView([48.2, 16.37], 8); // Mittig auf Österreich; passe an falls nötig
-
-    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-      maxZoom: 19,
-      attribution: '© OpenStreetMap'
-    }).addTo(map);
-
-    // Infobox (oben links)
-    const infoBox = document.getElementById('infobox');
-
-    // --- GeoJSON laden: versuche mehrere mögliche Dateinamen ---
-    const candidateFiles = [
-      './regionen.geojson',
-      './regionen.json',
-      './regionen',
-      './data/regionen.geojson',
-      './data/regionen.json'
-    ];
-
-    async function loadFirstAvailable(candidates) {
-      for (const path of candidates) {
-        try {
-          const res = await fetch(path);
-          if (!res.ok) throw new Error('not ok');
-          const data = await res.json();
-          console.log('GeoJSON geladen von', path);
-          return data;
-        } catch (e) {
-          // ignore and try next
-          console.log('Ladeversuch fehlgeschlagen für', path, e.message);
-        }
-      }
-      throw new Error('Keine GeoJSON-Datei gefunden. Bitte prüfe den Pfad zu den Regionen-Dateien.');
-    }
-
-    function style(feature) {
-      return {
-        color: '#333',
-        weight: 1,
-        fillColor: '#ccccff',
-        fillOpacity: 0.6
-      };
-    }
-
-    function highlightFeature(e) {
-      const layer = e.target;
-      layer.setStyle({ weight: 3, color: '#0066cc' });
-      if (!L.Browser.ie && !L.Browser.opera && !L.Browser.edge) {
-        layer.bringToFront();
-      }
-    }
-
-    function resetHighlight(e) {
-      geojsonLayer.resetStyle(e.target);
-    }
-
-    // onEachFeature: mouseover zeigt name, mouseout zurück, click öffnet URL
-    function onEachFeature(feature, layer) {
-      // set pointer cursor (add class to SVG path element if available)
-      if (layer.getElement) {
-        const el = layer.getElement();
-        if (el) el.classList.add('region-cursor');
-      }
-
-      // mouseover -> show tooltip & update infobox and highlight
-      layer.on({
-        mouseover: function (e) {
-          highlightFeature(e);
-          const name = (feature.properties && feature.properties.name) ? feature.properties.name : 'Unbenannte Region';
-          // bind a sticky tooltip so it follows the mouse
-          layer.bindTooltip(name, { sticky: true }).openTooltip(e.latlng);
-          infoBox.textContent = name;
-        },
-        mouseout: function (e) {
-          // remove tooltip & reset style
-          layer.closeTooltip();
-          resetHighlight(e);
-          infoBox.textContent = 'Bewege die Maus über eine Region';
-        },
-        click: function (e) {
-          const url = feature.properties && feature.properties.url ? feature.properties.url : null;
-          if (url) {
-            // öffne Ziel in neuem Tab - passe an wenn du im gleichen Tab öffnen willst
-            window.open(url, '_blank');
-          } else {
-            // Falls keine URL vorhanden ist, zoome einfach auf die Region
-            map.fitBounds(layer.getBounds());
-          }
-        }
-      });
-
-      // optional: beschriftung dauerhaft anzeigen (z. B. centroid) - auskommentiert
-      // if (feature.properties && feature.properties.name) {
-      //   const center = layer.getBounds().getCenter();
-      //   L.marker(center, { interactive:false }).bindTooltip(feature.properties.name, {permanent:true, direction:'center', className:'label'}).addTo(map);
-      // }
-    }
-
-    let geojsonLayer = null;
-
-    (async function(){
-      try {
-        const data = await loadFirstAvailable(candidateFiles);
-        geojsonLayer = L.geoJSON(data, {
-          style: style,
-          onEachFeature: onEachFeature
-        }).addTo(map);
-
-        // zoom to layer bounds
-        map.fitBounds(geojsonLayer.getBounds());
-
-      } catch (err) {
-        console.error(err);
-        infoBox.textContent = 'Fehler: ' + err.message;
-      }
-    })();
-
-  </script>
-</body>
-</html>
