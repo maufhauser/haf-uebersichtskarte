@@ -177,10 +177,64 @@ fetch(AUSTRIA_GEOJSON_FILE)
     console.log("austriaBounds.getCenter():", austriaBounds?.getCenter());
     console.log("austriaBounds BBOX:", austriaBounds.toBBoxString());
 
-    /* NO ZOOM FIX YET — DEBUG ONLY */
+    /* === TIGHT FIT (responsive, safe shrink) === */
+
+    const SHRINK_DESKTOP = -0.03;
+    const SHRINK_TABLET  = -0.015;
+    const SHRINK_MOBILE  = 0;
+
+    function getResponsiveShrink() {
+      const w = window.innerWidth || document.documentElement.clientWidth || 1024;
+      if (w <= 480) return SHRINK_MOBILE;
+      if (w <= 900) return SHRINK_TABLET;
+      return SHRINK_DESKTOP;
+    }
+
+    function safePadBounds(bounds, padAmount) {
+      if (!bounds || typeof bounds.pad !== 'function') return bounds;
+      try {
+        const p = bounds.pad(padAmount);
+        const isValid = (typeof p.isValid === 'function') ? p.isValid() : !!(p && p.getCenter);
+        if (isValid) return p;
+      } catch (e) {}
+      return bounds;
+    }
+
+    function fitAustriaTight() {
+      try { map.invalidateSize(); } catch(e){}
+      if (!austriaBounds) return;
+      const valid = typeof austriaBounds.isValid === "function" ? austriaBounds.isValid() : true;
+      if (!valid) return;
+
+      const shrink = getResponsiveShrink();
+      const boundsToUse = safePadBounds(austriaBounds, shrink);
+
+      const bestZoom = map.getBoundsZoom(boundsToUse, false);
+      const zoomTo = Math.min(bestZoom, MAX_FITBOUNDS_ZOOM);
+
+      map.setView(boundsToUse.getCenter(), zoomTo, { animate: false });
+
+      setTimeout(() => {
+        try {
+          map.fitBounds(boundsToUse, { padding: FIT_PADDING, maxZoom: MAX_FITBOUNDS_ZOOM, animate: false });
+        } catch (e) {}
+      }, 30);
+
+      console.log("FITTIGHT → shrink:", shrink, 
+                  "bounds:", boundsToUse.toBBoxString(),
+                  "zoom:", zoomTo);
+    }
+
+    setTimeout(fitAustriaTight, 180);
+
+    window.addEventListener('resize', () => {
+      if (window.__fit_timeout) clearTimeout(window.__fit_timeout);
+      window.__fit_timeout = setTimeout(() => fitAustriaTight(), 160);
+    });
+
   });
 
-/* REGIONS & INTERACTION (unchanged original code) */
+/* REGIONS & INTERACTION */
 window.regionsLayer = null;
 
 function onEachRegion(feature, layer) {
