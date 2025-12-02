@@ -3,26 +3,16 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>HAF Übersichtskarte</title>
+  <title>HAF Übersichtskarte — minimal</title>
 
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
   <style>
-    html,body { height:100%; margin:0; background:#ffffff; }
-    /* Karte soll den ganzen Viewport füllen; keine zusätzlichen Abstände erlauben */
-    #map { width:100%; height:100vh; background:#ffffff; display:block; margin:0; padding:0; border:0; box-sizing:border-box; } 
-
-    /* Legende */
-    .legend { background: white; padding:8px 10px; border-radius:6px; box-shadow:0 1px 6px rgba(0,0,0,0.15); font-size:14px; }
-    .legend .item { display:flex; align-items:center; gap:8px; margin-bottom:6px; }
-    .legend .swatch { width:18px; height:12px; border-radius:2px; display:inline-block; }
-
-    /* Tooltips immer ganz oben */
-    .leaflet-tooltip {
-      z-index: 100000 !important;
-      pointer-events: none;
-    }
-
-    @media (max-width:700px){ .legend { font-size:13px; padding:6px 8px; } }
+    html,body{height:100%;margin:0;background:#fff}
+    /* Karte füllt Viewport, kein zusätzlicher Rand */
+    #map{width:100%;height:100vh;display:block;margin:0;padding:0;box-sizing:border-box;background:#fff}
+    /* kleine Legende-Stile (optional) */
+    .legend{background:#fff;padding:8px;border-radius:6px;box-shadow:0 1px 6px rgba(0,0,0,.12);font-size:14px}
+    .swatch{display:inline-block;width:18px;height:12px;border-radius:2px;margin-right:8px;vertical-align:middle}
   </style>
 </head>
 <body>
@@ -30,368 +20,117 @@
 
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script>
-/* === Konfiguration und Konstanten === */
-const REGIONS_GEOJSON_FILE = 'regionen.geojson';
+/* Minimal, kompakt und iframe-sicher
+   - keine sichtbare Basemap (transparenter TileLayer)
+   - Klick auf Region öffnet genau einen Link (first match)
+   - tight fit auf Österreich, responsive auf Resize
+*/
+
+/* Dateien */
 const AUSTRIA_GEOJSON_FILE = 'bundeslaender.geojson';
+const REGIONS_GEOJSON_FILE = 'regionen.geojson';
 
-const COLOR_FORERUNNER = "#7b8ca0";
-const COLOR_FOLLOWER   = "#a1bdda";
-const COLOR_DEFAULT    = "#6c757d";
+/* Farben */
+const COLOR_FORERUNNER = '#7b8ca0';
+const COLOR_FOLLOWER   = '#a1bdda';
+const COLOR_DEFAULT    = '#6c757d';
 
-const LINK_CANDIDATES = ['url','website','link','homepage','href','site','website_url','portal','web','uri','home'];
+/* Karte */
+const map = L.map('map', { minZoom: 6, maxZoom: 13, scrollWheelZoom: true }).setView([47.5,13.3],7);
 
-const MAX_FITBOUNDS_ZOOM = 13;
-const FIT_PADDING = [0,0];    // tight
-const OUTLIER_CUT_PERCENT = 2.5; // used for robust bounds (intern)
-
-// Karte initialisieren (ohne TileLayer zuerst)
-const map = L.map('map', { minZoom: 6, maxZoom: 13, scrollWheelZoom: true, worldCopyJump: false }).setView([47.5,13.3],7);
-
-/* --- Transparenter TileLayer (verhindert unerwünschten Weißraum) --- */
-/* 1x1 transparente PNG als Tile-Source -> keine sichtbaren Kacheln, Leaflet verhält sich "normal" */
+/* transparent tilelayer: verhindert Leaflet's extra white-space behavior */
 L.tileLayer('data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8z8AIAgMAnwPf4gAAAABJRU5ErkJggg==', {
-  maxZoom: 13,
-  minZoom: 6,
-  attribution: ''
+  minZoom: 6, maxZoom: 13, attribution: ''
 }).addTo(map);
 
-/* Panes: country behind, regions in front */
+/* Panes */
 map.createPane('countryPane'); map.getPane('countryPane').style.zIndex = 200;
 map.createPane('regionsPane'); map.getPane('regionsPane').style.zIndex = 650;
 if (map.getPane('tooltipPane')) map.getPane('tooltipPane').style.zIndex = 1200;
 
-/* Helper: open links in top window (iframe-safe) */
-function openInTopWindow(url) {
-  if (!url) return false;
-  url = url.toString().trim();
-  if (/^\/[^\/]/.test(url)) { try { window.top.location.href = url; } catch(e){ window.location.href = url; } return true; }
-  if (!/^[a-zA-Z]+:\/\//.test(url)) url = 'https://' + url;
-  try { window.top.location.href = url; } catch(e) { window.location.href = url; }
+/* iframe-safe open (top window) */
+function openInTopWindow(url){
+  if(!url) return false;
+  url = String(url).trim();
+  if(/^\/[^\/]/.test(url)){
+    try{ window.top.location.href = url; }catch(e){ window.location.href = url; }
+    return true;
+  }
+  if(!/^[a-zA-Z]+:\/\//.test(url)) url = 'https://' + url;
+  try{ window.top.location.href = url; }catch(e){ window.location.href = url; }
   return true;
 }
 
-/* --- Styling-Funktionen für GeoJSON --- */
-function austriaStyle(feature) {
-  return {
-    color: '#ffffff',
-    weight: 2,
-    fillColor: '#e1e1e1',
-    fillOpacity: 1,
-    interactive: false,
-    pane: 'countryPane'
-  };
-}
-function styleByType(feature) {
-  const t = (feature.properties && feature.properties.type || '').toLowerCase();
+/* Styles */
+function austriaStyle(){ return { color:'#fff', weight:2, fillColor:'#eaeaea', fillOpacity:1, interactive:false, pane:'countryPane' }; }
+function regionStyle(feature){
+  const t = (feature && feature.properties && feature.properties.type || '').toLowerCase();
   let fill = COLOR_DEFAULT;
-  if (t === 'forerunner') fill = COLOR_FORERUNNER;
-  if (t === 'follower')   fill = COLOR_FOLLOWER;
-  return {
-    color: '#ffffff',
-    weight: 2,
-    fillColor: fill,
-    fillOpacity: 1,
-    className: 'region-polygon',
-    pane: 'regionsPane'
-  };
+  if(t==='forerunner') fill = COLOR_FORERUNNER;
+  if(t==='follower') fill = COLOR_FOLLOWER;
+  return { color:'#fff', weight:2, fillColor:fill, fillOpacity:1, pane:'regionsPane' };
 }
 
-/* === Hilfsfunktionen zur Berechnung robuster Bounds === */
-function collectCoordinatesFromGeoJSON(geojson) {
-  const coords = [];
-  function walk(g) {
-    if (!g) return;
-    const type = g.type;
-    if (type === "Point") coords.push(g.coordinates);
-    else if (type === "MultiPoint" || type === "LineString") g.coordinates.forEach(c => coords.push(c));
-    else if (type === "Polygon") g.coordinates.forEach(r => r.forEach(c => coords.push(c)));
-    else if (type === "MultiLineString") g.coordinates.forEach(ls => ls.forEach(c => coords.push(c)));
-    else if (type === "MultiPolygon") g.coordinates.forEach(poly => poly.forEach(r => r.forEach(c => coords.push(c))));
-    else if (type === "GeometryCollection") g.geometries.forEach(gg => walk(gg));
-  }
-  if (geojson.type === "FeatureCollection") geojson.features.forEach(f => walk(f.geometry));
-  else if (geojson.type === "Feature") walk(geojson.geometry);
-  else walk(geojson);
-  return coords;
-}
-function percentile(sortedArr, p) {
-  if (!sortedArr.length) return null;
-  const idx = (p / 100) * (sortedArr.length - 1);
-  const lo = Math.floor(idx), hi = Math.ceil(idx);
-  if (lo === hi) return sortedArr[lo];
-  const w = idx - lo;
-  return sortedArr[lo] * (1 - w) + sortedArr[hi] * w;
-}
-function computeRobustBounds(geojson) {
-  const coords = collectCoordinatesFromGeoJSON(geojson);
-  if (!coords.length) return null;
-  const lons = coords.map(c => c[0]).filter(Number.isFinite).sort((a,b)=>a-b);
-  const lats = coords.map(c => c[1]).filter(Number.isFinite).sort((a,b)=>a-b);
-  if (lons.length < 6 || lats.length < 6) {
-    return L.latLngBounds([[lats[0], lons[0]], [lats[lats.length-1], lons[lons.length-1]]]);
-  }
-  const LO = OUTLIER_CUT_PERCENT, HI = 100 - OUTLIER_CUT_PERCENT;
-  const minLon = percentile(lons, LO);
-  const maxLon = percentile(lons, HI);
-  const minLat = percentile(lats, LO);
-  const maxLat = percentile(lats, HI);
-  return L.latLngBounds([[minLat, minLon], [maxLat, maxLon]]);
+/* tight fit helper (uses bounds, sets view to exact zoom) */
+const FIT_PADDING = [0,0];
+function fitToBoundsTight(bounds){
+  if(!bounds || (typeof bounds.isValid==='function' && !bounds.isValid())) return;
+  try{ map.invalidateSize(); }catch(e){}
+  // best zoom to fit without padding
+  const bestZoom = map.getBoundsZoom(bounds, false);
+  const zoomTo = Math.min(bestZoom, map.getMaxZoom ? map.getMaxZoom() : 13);
+  map.setView(bounds.getCenter(), zoomTo, { animate:false });
+  // small fallback
+  setTimeout(()=> {
+    try{ map.fitBounds(bounds, { padding: FIT_PADDING, maxZoom: zoomTo, animate:false }); }catch(e){}
+  }, 20);
 }
 
-/* GLOBAL variable for bounds */
+/* load Austria geometry and regions */
 let austriaBounds = null;
+fetch(AUSTRIA_GEOJSON_FILE).then(r=>r.ok? r.json() : Promise.reject(r)).then(data=>{
+  const bl = L.geoJSON(data, { style: austriaStyle }).addTo(map);
+  austriaBounds = bl.getBounds();
+  fitToBoundsTight(austriaBounds);
+  // refit on resize
+  window.addEventListener('resize', () => { if(window.__fit_timeout) clearTimeout(window.__fit_timeout); window.__fit_timeout = setTimeout(()=>fitToBoundsTight(austriaBounds), 160); });
+}).catch(e => console.warn('bundeslaender.geojson load failed', e));
 
-/* --- Lade Bundesländer und setze tight fit --- */
-fetch(AUSTRIA_GEOJSON_FILE)
-  .then(r => {
-    if (!r.ok) throw new Error('Fehler beim Laden von ' + AUSTRIA_GEOJSON_FILE + ' (' + r.status + ')');
-    return r.json();
-  })
-  .then(data => {
-    const bl = L.geoJSON(data, { style: austriaStyle, interactive: false, pane: 'countryPane' }).addTo(map);
+/* single-link priority list (first property that exists is opened) */
+const LINK_FIELDS = ['url','website','link','homepage','href','site','portal','web','uri','home','slug'];
 
-    // Versuche robuste Bounds, fallback auf bl.getBounds()
-    const robust = computeRobustBounds(data);
-    if (robust && typeof robust.isValid === 'function' ? robust.isValid() : true) austriaBounds = robust;
-    else austriaBounds = bl.getBounds();
-
-    /* --- Responsive safe shrink + fit --- */
-    const SHRINK_DESKTOP = -0.03;  // 3% enger auf Desktop
-    const SHRINK_TABLET  = -0.015; // 1.5% auf Tablet
-    const SHRINK_MOBILE  = 0;      // kein Zuschneiden auf Mobile (sicher)
-
-    function getResponsiveShrink() {
-      const w = window.innerWidth || document.documentElement.clientWidth || 1024;
-      if (w <= 480) return SHRINK_MOBILE;
-      if (w <= 900) return SHRINK_TABLET;
-      return SHRINK_DESKTOP;
-    }
-
-    function safePadBounds(bounds, padAmount) {
-      if (!bounds || typeof bounds.pad !== 'function') return bounds;
-      try {
-        const p = bounds.pad(padAmount);
-        const valid = (typeof p.isValid === 'function') ? p.isValid() : !!(p && p.getCenter);
-        if (valid) return p;
-      } catch (e) { /* ignore */ }
-      return bounds;
-    }
-
-    function fitAustriaTight() {
-      try { map.invalidateSize(); } catch (e) {}
-      if (!austriaBounds) return;
-      const valid = (typeof austriaBounds.isValid === 'function') ? austriaBounds.isValid() : true;
-      if (!valid) return;
-
-      const shrink = getResponsiveShrink();
-      const boundsToUse = safePadBounds(austriaBounds, shrink);
-
-      // best zoom to fit exactly these bounds (no padding)
-      const bestZoom = map.getBoundsZoom(boundsToUse, false);
-      const zoomTo = Math.min(bestZoom, MAX_FITBOUNDS_ZOOM);
-
-      // apply exact center + zoom (stable)
-      map.setView(boundsToUse.getCenter(), zoomTo, { animate: false });
-
-      // fallback fitBounds with tight padding (helps in some iframe/CSS cases)
-      setTimeout(() => {
-        try {
-          map.fitBounds(boundsToUse, { padding: FIT_PADDING, maxZoom: MAX_FITBOUNDS_ZOOM, animate: false });
-        } catch (e) {}
-      }, 30);
-    }
-
-    setTimeout(fitAustriaTight, 180);
-    window.addEventListener('resize', () => {
-      if (window.__fit_timeout) clearTimeout(window.__fit_timeout);
-      window.__fit_timeout = setTimeout(() => fitAustriaTight(), 160);
-    });
-  })
-  .catch(err => {
-    console.warn('bundeslaender.geojson konnte nicht geladen werden:', err);
-  });
-
-/* === Regions (interactive) === */
-window.regionsLayer = null;
-
-function onEachRegion(feature, layer) {
-  const type = (feature.properties && feature.properties.type || '').toLowerCase();
-  const name = (feature.properties && feature.properties.name) ? feature.properties.name : '(kein Name)';
-  let prefix = '';
-  if (type === 'forerunner') prefix = 'Forerunner-Region ';
-  else if (type === 'follower') prefix = 'Follower-Region ';
-
-  layer.bindTooltip(prefix + name, { sticky: true, direction: 'auto', pane: 'tooltipPane' });
-
-  layer.on({
-    mouseover(e) {
-      e.target.setStyle({ weight: 3, fillOpacity: 1 });
-      if (!L.Browser.ie && !L.Browser.opera && !L.Browser.edge) e.target.bringToFront();
-    },
-    mouseout(e) {
-      if (window.regionsLayer) window.regionsLayer.resetStyle(e.target);
-    },
-    click(e) {
-      const props = (feature.properties || {});
-      for (const k of LINK_CANDIDATES) {
-        if (props[k] && props[k].toString && props[k].toString().trim().length) {
-          openInTopWindow(props[k]); return;
+/* load regions (interactive) */
+fetch(REGIONS_GEOJSON_FILE).then(r=>r.ok? r.json() : Promise.reject(r)).then(data=>{
+  L.geoJSON(data, {
+    style: regionStyle,
+    onEachFeature: function(feature, layer){
+      const name = feature.properties && (feature.properties.name || feature.properties.title) || '(Region)';
+      layer.bindTooltip(name, { sticky:true, direction:'auto', pane:'tooltipPane' });
+      layer.on('click', function(){
+        const props = feature.properties || {};
+        for(const k of LINK_FIELDS){
+          if(props[k] && String(props[k]).trim().length){
+            // slug special: if it's just a slug (no protocol/host), open as /slug
+            if(k==='slug'){ openInTopWindow('/' + String(props[k]).trim()); return; }
+            openInTopWindow(props[k]);
+            return;
+          }
         }
-      }
-      if (props.slug && props.slug.toString().trim()) { openInTopWindow('/' + props.slug.toString().trim()); return; }
-      if (e.target && e.target.getBounds) map.fitBounds(e.target.getBounds(), { padding: FIT_PADDING, maxZoom: MAX_FITBOUNDS_ZOOM });
-    }
-  });
-}
-
-function createRegionsLayer(data) {
-  window.regionsLayer = L.geoJSON(data, {
-    style: styleByType,
-    onEachFeature: onEachRegion,
+      });
+    },
     pane: 'regionsPane'
   }).addTo(map);
-}
+}).catch(e => console.warn('regionen.geojson load failed', e));
 
-/* pointer-events enforcement for SVG paths (improves click behavior in some browsers) */
-function enforcePointerEventsOnRegions() {
-  try {
-    if (!window.regionsLayer) {
-      document.querySelectorAll('#map svg').forEach(sv => {
-        sv.style.pointerEvents = 'auto';
-        sv.querySelectorAll('g').forEach(g => { g.style.pointerEvents = 'auto'; });
-        sv.querySelectorAll('path').forEach(p => { p.style.pointerEvents = 'auto'; p.style.cursor = 'pointer'; });
-      });
-      return;
-    }
-    window.regionsLayer.eachLayer(function(layer){
-      if (layer && layer._path) {
-        layer._path.style.pointerEvents = 'auto';
-        layer._path.style.cursor = 'pointer';
-      }
-    });
-  } catch (err) { console.warn('enforcePointerEventsOnRegions error', err); }
-}
-
-/* DOM fallback on path click - uses top window */
-function attachDomFallbackToRegions() {
-  try {
-    if (!window.regionsLayer || typeof window.regionsLayer.eachLayer !== 'function') return;
-    window.regionsLayer.eachLayer(function(layer){
-      try {
-        if (layer && layer._path && !layer._path.__domClickAttached) {
-          layer._path.addEventListener('click', function(evt){
-            try {
-              const props = (layer.feature && layer.feature.properties) ? layer.feature.properties : {};
-              for (const k of LINK_CANDIDATES) {
-                if (props[k] && props[k].toString && props[k].toString().trim().length) { openInTopWindow(props[k]); return; }
-              }
-              if (props.slug && props.slug.toString().trim()) { openInTopWindow('/' + props.slug.toString().trim()); return; }
-            } catch(e) { console.warn('DOM-Fallback handler error', e); }
-          }, false);
-          layer._path.__domClickAttached = true;
-        }
-      } catch(e){}
-    });
-  } catch (err) { console.warn('attachDomFallbackToRegions error', err); }
-}
-
-/* global path->layer handler for regions only (uses top window) */
-(function attachGlobalPathClickHandlerForRegions(){
-  const mapEl = document.getElementById('map');
-  if (!mapEl) return;
-  const handler = function(e){
-    try {
-      const el = document.elementFromPoint(e.clientX, e.clientY);
-      let path = el;
-      while (path && path.tagName !== 'path') path = path.parentElement || path.parentNode;
-      if (!path) return;
-      const candidateLayers = (window.regionsLayer && typeof window.regionsLayer.getLayers === 'function') ? window.regionsLayer.getLayers() : [];
-      const pid = path._leaflet_id;
-      const layer = candidateLayers.find(l => l && (l._path === path || l._leaflet_id === pid || (l._path && l._path._leaflet_id === pid)));
-      if (!layer) return;
-      const props = (layer.feature && layer.feature.properties) ? layer.feature.properties : {};
-      for (const k of LINK_CANDIDATES) {
-        if (props[k] && props[k].toString && props[k].toString().trim().length) {
-          openInTopWindow(props[k]); return;
-        }
-      }
-      if (props.slug && props.slug.toString().trim()) { openInTopWindow('/' + props.slug.toString().trim()); return; }
-    } catch (err) { /* ignore */ }
-  };
-  mapEl.addEventListener('click', handler, true);
-})();
-
-/* Load regions */
-fetch(REGIONS_GEOJSON_FILE)
-  .then(r => {
-    if (!r.ok) throw new Error('Fehler beim Laden von ' + REGIONS_GEOJSON_FILE + ' (' + r.status + ')');
-    return r.json();
-  })
-  .then(data => {
-    createRegionsLayer(data);
-    setTimeout(()=>map.invalidateSize(), 200);
-    enforcePointerEventsOnRegions();
-    attachDomFallbackToRegions();
-    map.on('zoomend moveend layeradd layerremove', function(){
-      enforcePointerEventsOnRegions();
-      attachDomFallbackToRegions();
-    });
-    const overlay = document.querySelector('.leaflet-pane.leaflet-overlay-pane');
-    if (overlay) {
-      const mo = new MutationObserver(() => {
-        if (window.__pe_timeout) clearTimeout(window.__pe_timeout);
-        window.__pe_timeout = setTimeout(function(){
-          enforcePointerEventsOnRegions();
-          attachDomFallbackToRegions();
-        }, 80);
-      });
-      mo.observe(overlay, { childList:true, subtree:true, attributes:true });
-    }
-  })
-  .catch(err => {
-    console.error('Fehler beim Laden der Regionen:', err);
-  });
-
-/* Legend */
+/* Minimal legend (optional) */
 const legend = L.control({ position: 'bottomright' });
 legend.onAdd = function(){
-  const div = L.DomUtil.create('div','legend');
-  div.innerHTML = '<strong>Legende</strong>';
-  const add = (color,label) => {
-    const item = document.createElement('div');
-    item.className = 'item';
-    const sw = document.createElement('span');
-    sw.className = 'swatch';
-    sw.style.background = color;
-    const txt = document.createElement('span');
-    txt.textContent = label;
-    item.appendChild(sw);
-    item.appendChild(txt);
-    div.appendChild(item);
-  };
-  add(COLOR_FORERUNNER, 'Forerunner-Region');
-  add(COLOR_FOLLOWER, 'Follower-Region');
-  return div;
+  const d = L.DomUtil.create('div','legend');
+  d.innerHTML = '<div><span class="swatch" style="background:'+COLOR_FORERUNNER+'"></span>Forerunner</div><div><span class="swatch" style="background:'+COLOR_FOLLOWER+'"></span>Follower</div>';
+  return d;
 };
 legend.addTo(map);
 
-/* Accessibility: Enter opens link for region under map center (top window) */
-document.addEventListener('keydown', function(e){
-  if (e.key === 'Enter' && window.regionsLayer) {
-    const center = map.getCenter();
-    window.regionsLayer.eachLayer(function(layer){
-      if (layer && layer.getBounds && layer.getBounds().contains(center)) {
-        const props = (layer.feature && layer.feature.properties) ? layer.feature.properties : {};
-        for (const k of LINK_CANDIDATES) {
-          if (props[k] && props[k].toString && props[k].toString().trim().length) {
-            openInTopWindow(props[k]); return;
-          }
-        }
-        if (props.slug && props.slug.toString().trim()) { openInTopWindow('/' + props.slug.toString().trim()); return; }
-      }
-    });
-  }
-});
 </script>
 </body>
 </html>
