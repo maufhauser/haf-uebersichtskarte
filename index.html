@@ -88,9 +88,89 @@ function styleByType(feature) {
   };
 }
 
-/* --- Fit bounds settings (iframe-friendly) --- */
-const MAX_FITBOUNDS_ZOOM = 13;   // maximale erlaubte Zoomstufe (du kannst das anpassen)
-const FIT_PADDING = [0,0];       // **keine** Pixel-Padding -> möglichst tight
+/* --- Fit bounds settings (robust, outlier-resistant) --- */
+const MAX_FITBOUNDS_ZOOM = 13;   // maximale erlaubte Zoomstufe
+const FIT_PADDING = [0,0];       // kein Padding -> tight
+const OUTLIER_CUT_PERCENT = 2.5; // entferne untere/obere 2.5% Koordinaten-Extremwerte
+
+/**
+ * Flatten GeoJSON geometry coordinates into array of [lng,lat] pairs.
+ */
+function collectCoordinatesFromGeoJSON(geojson) {
+  const coords = [];
+  function walkGeom(g) {
+    if (!g) return;
+    const type = g.type;
+    if (type === 'Point') coords.push(g.coordinates);
+    else if (type === 'MultiPoint' || type === 'LineString') {
+      g.coordinates.forEach(c => coords.push(c));
+    } else if (type === 'MultiLineString' || type === 'Polygon') {
+      g.coordinates.forEach(arr => arr.forEach(c => coords.push(c)));
+    } else if (type === 'MultiPolygon') {
+      g.coordinates.forEach(poly => poly.forEach(ring => ring.forEach(c => coords.push(c))));
+    } else if (type === 'GeometryCollection') {
+      g.geometries.forEach(gg => walkGeom(gg));
+    }
+  }
+  if (geojson.type === 'FeatureCollection') {
+    geojson.features.forEach(f => walkGeom(f.geometry));
+  } else if (geojson.type === 'Feature') {
+    walkGeom(geojson.geometry);
+  } else {
+    walkGeom(geojson);
+  }
+  return coords; // array of [lng,lat]
+}
+
+/**
+ * Compute percentile (p in [0,100]) for sorted numeric array.
+ */
+function percentile(sortedArr, p) {
+  if (!sortedArr.length) return null;
+  const idx = (p/100) * (sortedArr.length - 1);
+  const lower = Math.floor(idx);
+  const upper = Math.ceil(idx);
+  if (lower === upper) return sortedArr[lower];
+  const weight = idx - lower;
+  return sortedArr[lower] * (1 - weight) + sortedArr[upper] * weight;
+}
+
+/**
+ * Compute robust bounds by trimming extreme coordinate percentiles.
+ * Falls keine ausreichenden Koordinaten vorhanden, gibt null zurück.
+ */
+function computeRobustBounds(geojson) {
+  const coords = collectCoordinatesFromGeoJSON(geojson);
+  if (!coords || coords.length === 0) return null;
+
+  const lons = coords.map(c => c[0]).filter(x => isFinite(x)).sort((a,b)=>a-b);
+  const lats = coords.map(c => c[1]).filter(x => isFinite(x)).sort((a,b)=>a-b);
+
+  // if too few points, fallback to raw min/max
+  if (lons.length < 6 || lats.length < 6) {
+    const minLon = lons[0], maxLon = lons[lons.length-1];
+    const minLat = lats[0], maxLat = lats[lats.length-1];
+    return L.latLngBounds([[minLat,minLon],[maxLat,maxLon]]);
+  }
+
+  const lowerPct = OUTLIER_CUT_PERCENT;
+  const upperPct = 100 - OUTLIER_CUT_PERCENT;
+
+  const minLon = percentile(lons, lowerPct);
+  const maxLon = percentile(lons, upperPct);
+  const minLat = percentile(lats, lowerPct);
+  const maxLat = percentile(lats, upperPct);
+
+  // Safety: ensure min < max
+  if (!(isFinite(minLon) && isFinite(maxLon) && isFinite(minLat) && isFinite(maxLat) && minLon < maxLon && minLat < maxLat)) {
+    // fallback to raw bounds
+    const rawMinLon = lons[0], rawMaxLon = lons[lons.length-1];
+    const rawMinLat = lats[0], rawMaxLat = lats[lats.length-1];
+    return L.latLngBounds([[rawMinLat,rawMinLon],[rawMaxLat,rawMaxLon]]);
+  }
+
+  return L.latLngBounds([[minLat,minLon],[maxLat,maxLon]]);
+}
 
 let austriaBounds = null;
 fetch(AUSTRIA_GEOJSON_FILE)
@@ -98,24 +178,31 @@ fetch(AUSTRIA_GEOJSON_FILE)
   .then(data => {
     const bl = L.geoJSON(data, { style: austriaStyle, interactive: false, pane: 'countryPane' }).addTo(map);
     try {
-      austriaBounds = bl.getBounds();
+      // robust bounds calculation (removes coordinate outliers)
+      const robustBounds = computeRobustBounds(data);
+      if (robustBounds && robustBounds.isValid && !robustBounds.isEmpty()) {
+        austriaBounds = robustBounds;
+        console.log('Verwende robuste Bounds (Outlier-Cut ' + OUTLIER_CUT_PERCENT + '%):', austriaBounds.toBBoxString());
+      } else {
+        austriaBounds = bl.getBounds();
+        console.log('Robuste Bounds fehlgeschlagen, fallback auf raw getBounds():', austriaBounds.toBBoxString());
+      }
 
-      // kleine helper-Funktion: setze möglichst tighten Zoom an die Grenzen
+      // tighten logic: compute best zoom that fills bounds (no padding)
       function fitAustriaTight() {
         try { map.invalidateSize(); } catch(e){}
         if (!austriaBounds || !austriaBounds.isValid || austriaBounds.isEmpty()) return;
 
-        // Berechne die größtmögliche Zoom-Stufe, die die Bounds genau füllt (ohne Padding)
+        // Best zoom to fit exactly the bounds into the current map size (no padding)
         const bestZoom = map.getBoundsZoom(austriaBounds, false);
 
-        // Begrenze auf MAX_FITBOUNDS_ZOOM, damit wir nicht zu stark hereinzoomen
+        // Limit zoom to allowed maximum
         const zoomTo = Math.min(bestZoom, MAX_FITBOUNDS_ZOOM);
 
-        // Setze View exakt auf Zentrum + berechneten Zoom (animate false für stabilen initialen Zustand)
+        // Set view to center with exact zoom (stable)
         map.setView(austriaBounds.getCenter(), zoomTo, { animate: false });
 
-        // Als Fallback/Absicherung: rufe fitBounds ohne Padding auf, aber ohne animate
-        // (manchmal notwendig bei bestimmten iframe-/CSS-Layouts)
+        // As extra assurance, call fitBounds with zero padding (minor timeout helps with some layouts)
         setTimeout(() => {
           try {
             map.fitBounds(austriaBounds, { padding: FIT_PADDING, maxZoom: MAX_FITBOUNDS_ZOOM, animate: false });
@@ -123,16 +210,19 @@ fetch(AUSTRIA_GEOJSON_FILE)
         }, 20);
       }
 
-      // initial tight fit (leicht verzögert damit DOM & Layout stabil sind)
+      // initial tight fit
       setTimeout(fitAustriaTight, 150);
 
-      // bei resize erneut genauen Fit setzen
+      // adjust on resize
       window.addEventListener('resize', () => {
         setTimeout(()=> {
           fitAustriaTight();
         }, 150);
       });
-    } catch (e) { /* ignore */ }
+
+    } catch (e) {
+      console.warn('Fehler beim Berechnen der Bounds:', e);
+    }
   })
   .catch(err => {
     console.warn('bundeslaender.geojson konnte nicht geladen werden:', err);
