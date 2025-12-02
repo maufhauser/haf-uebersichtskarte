@@ -89,8 +89,8 @@ function styleByType(feature) {
 }
 
 /* --- Fit bounds settings (iframe-friendly) --- */
-const MAX_FITBOUNDS_ZOOM = 13;   // adjust if you want tighter zoom (12/13)
-const FIT_PADDING = [1,1];       // very tight padding for iframe use
+const MAX_FITBOUNDS_ZOOM = 12;   // slightly reduced to avoid over-zooming
+const FIT_PADDING = [6,6];       // very tight pixel padding for a near-border fit
 
 let austriaBounds = null;
 fetch(AUSTRIA_GEOJSON_FILE)
@@ -102,14 +102,17 @@ fetch(AUSTRIA_GEOJSON_FILE)
       setTimeout(()=> {
         try { map.invalidateSize(); } catch(e){}
         if (austriaBounds && austriaBounds.isValid && !austriaBounds.isEmpty()) {
-          map.fitBounds(austriaBounds, { padding: FIT_PADDING, maxZoom: MAX_FITBOUNDS_ZOOM });
+          // use animate:false for stable initial render; pass pixel padding and maxZoom
+          map.fitBounds(austriaBounds, { padding: FIT_PADDING, maxZoom: MAX_FITBOUNDS_ZOOM, animate: false });
         }
       }, 120);
 
       window.addEventListener('resize', () => {
         setTimeout(()=> {
           map.invalidateSize();
-          if (austriaBounds) map.fitBounds(austriaBounds, { padding: FIT_PADDING, maxZoom: MAX_FITBOUNDS_ZOOM });
+          if (austriaBounds && austriaBounds.isValid && !austriaBounds.isEmpty()) {
+            map.fitBounds(austriaBounds, { padding: FIT_PADDING, maxZoom: MAX_FITBOUNDS_ZOOM, animate: false });
+          }
         }, 150);
       });
     } catch (e) { /* ignore */ }
