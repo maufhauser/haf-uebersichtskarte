@@ -51,13 +51,14 @@ map.createPane('regionsPane'); map.getPane('regionsPane').style.zIndex = 650;
 // ensure tooltip pane is above regions
 if (map.getPane('tooltipPane')) map.getPane('tooltipPane').style.zIndex = 1200;
 
-/* Helpers: open in same tab now */
-function openLinkSameTab(url) {
+/* Helpers: open in top-most window (replaces whole window even if in iframe) */
+function openInTopWindow(url) {
   if (!url) return false;
   url = url.toString().trim();
-  if (/^\/[^\/]/.test(url)) { window.location.href = url; return true; }
+  // relative path -> same origin, navigate top
+  if (/^\/[^\/]/.test(url)) { try { window.top.location.href = url; } catch(e){ window.location.href = url; } return true; }
   if (!/^[a-zA-Z]+:\/\//.test(url)) url = 'https://' + url;
-  window.location.href = url;
+  try { window.top.location.href = url; } catch(e) { window.location.href = url; }
   return true;
 }
 
@@ -79,7 +80,7 @@ function styleByType(feature) {
   if (t === 'follower')   fill = COLOR_FOLLOWER;
   return {
     color: '#ffffff',
-    weight: 2,             // region stroke = 2 (requested)
+    weight: 2,             // region stroke = 2
     fillColor: fill,
     fillOpacity: 1,
     className: 'region-polygon',
@@ -87,11 +88,8 @@ function styleByType(feature) {
   };
 }
 
-/* --- Load Austria (country) first, fit bounds tightly ---
-   We're using small padding and a maxZoom so the view is close to the country's bounds.
-   You can change MAX_FITBOUNDS_ZOOM to 11/12/13 depending on how close you want it.
-*/
-const MAX_FITBOUNDS_ZOOM = 11;   // adjust: 11 = closer, 13 = very close
+/* --- Fit bounds settings (iframe-friendly) --- */
+const MAX_FITBOUNDS_ZOOM = 11;   // adjust if you want tighter zoom (12/13)
 const FIT_PADDING = [2,2];       // very tight padding for iframe use
 
 let austriaBounds = null;
@@ -101,7 +99,6 @@ fetch(AUSTRIA_GEOJSON_FILE)
     const bl = L.geoJSON(data, { style: austriaStyle, interactive: false, pane: 'countryPane' }).addTo(map);
     try {
       austriaBounds = bl.getBounds();
-      // fitBounds after invalidateSize, and with maxZoom to avoid over-zoom
       setTimeout(()=> {
         try { map.invalidateSize(); } catch(e){}
         if (austriaBounds && austriaBounds.isValid && !austriaBounds.isEmpty()) {
@@ -109,7 +106,6 @@ fetch(AUSTRIA_GEOJSON_FILE)
         }
       }, 120);
 
-      // keep tight on resize as well
       window.addEventListener('resize', () => {
         setTimeout(()=> {
           map.invalidateSize();
@@ -146,10 +142,10 @@ function onEachRegion(feature, layer) {
       const props = (feature.properties || {});
       for (const k of LINK_CANDIDATES) {
         if (props[k] && props[k].toString && props[k].toString().trim().length) {
-          openLinkSameTab(props[k]); return;
+          openInTopWindow(props[k]); return;
         }
       }
-      if (props.slug && props.slug.toString().trim()) { openLinkSameTab('/' + props.slug.toString().trim()); return; }
+      if (props.slug && props.slug.toString().trim()) { openInTopWindow('/' + props.slug.toString().trim()); return; }
       if (e.target && e.target.getBounds) map.fitBounds(e.target.getBounds(), { padding: FIT_PADDING, maxZoom: MAX_FITBOUNDS_ZOOM });
     }
   });
@@ -183,7 +179,7 @@ function enforcePointerEventsOnRegions() {
   } catch (err) { console.warn('enforcePointerEventsOnRegions error', err); }
 }
 
-/* DOM fallback on path click - same-tab */
+/* DOM fallback on path click - uses top window */
 function attachDomFallbackToRegions() {
   try {
     if (!window.regionsLayer || typeof window.regionsLayer.eachLayer !== 'function') return;
@@ -194,9 +190,9 @@ function attachDomFallbackToRegions() {
             try {
               const props = (layer.feature && layer.feature.properties) ? layer.feature.properties : {};
               for (const k of LINK_CANDIDATES) {
-                if (props[k] && props[k].toString && props[k].toString().trim().length) { openLinkSameTab(props[k]); return; }
+                if (props[k] && props[k].toString && props[k].toString().trim().length) { openInTopWindow(props[k]); return; }
               }
-              if (props.slug && props.slug.toString().trim()) { openLinkSameTab('/' + props.slug.toString().trim()); return; }
+              if (props.slug && props.slug.toString().trim()) { openInTopWindow('/' + props.slug.toString().trim()); return; }
             } catch(e) { console.warn('DOM-Fallback handler error', e); }
           }, false);
           layer._path.__domClickAttached = true;
@@ -206,7 +202,7 @@ function attachDomFallbackToRegions() {
   } catch (err) { console.warn('attachDomFallbackToRegions error', err); }
 }
 
-/* global path->layer handler for regions only (same-tab) */
+/* global path->layer handler for regions only (uses top window) */
 (function attachGlobalPathClickHandlerForRegions(){
   const mapEl = document.getElementById('map');
   if (!mapEl) return;
@@ -223,14 +219,14 @@ function attachDomFallbackToRegions() {
       const props = (layer.feature && layer.feature.properties) ? layer.feature.properties : {};
       for (const k of LINK_CANDIDATES) {
         if (props[k] && props[k].toString && props[k].toString().trim().length) {
-          window.location.href = props[k].toString().trim(); return;
+          openInTopWindow(props[k]); return;
         }
       }
-      if (props.slug && props.slug.toString().trim()) { window.location.href = '/' + props.slug.toString().trim(); return; }
+      if (props.slug && props.slug.toString().trim()) { openInTopWindow('/' + props.slug.toString().trim()); return; }
     } catch (err) { /* ignore */ }
   };
   mapEl.addEventListener('click', handler, true);
-  console.log('Global regions-only path->layer click handler attached (same-tab).');
+  console.log('Global regions-only path->layer click handler attached (top-window).');
 })();
 
 /* Load regions */
@@ -286,7 +282,7 @@ legend.onAdd = function(){
 };
 legend.addTo(map);
 
-/* Accessibility: Enter opens link for region under map center */
+/* Accessibility: Enter opens link for region under map center (top window) */
 document.addEventListener('keydown', function(e){
   if (e.key === 'Enter' && window.regionsLayer) {
     const center = map.getCenter();
@@ -295,10 +291,10 @@ document.addEventListener('keydown', function(e){
         const props = (layer.feature && layer.feature.properties) ? layer.feature.properties : {};
         for (const k of LINK_CANDIDATES) {
           if (props[k] && props[k].toString && props[k].toString().trim().length) {
-            openLinkSameTab(props[k]); return;
+            openInTopWindow(props[k]); return;
           }
         }
-        if (props.slug && props.slug.toString().trim()) { openLinkSameTab('/' + props.slug.toString().trim()); return; }
+        if (props.slug && props.slug.toString().trim()) { openInTopWindow('/' + props.slug.toString().trim()); return; }
       }
     });
   }
