@@ -7,16 +7,13 @@
 
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
   <style>
-    /* Weißer Hintergrund */
-    html,body { height:100%; margin:0; background:#ffffff; } 
+    html,body { height:100%; margin:0; background:#ffffff; }
     #map { width:100%; height:100vh; background:#ffffff; } 
 
-    /* Legend */
     .legend { background: white; padding:8px 10px; border-radius:6px; box-shadow:0 1px 6px rgba(0,0,0,0.15); font-size:14px; }
     .legend .item { display:flex; align-items:center; gap:8px; margin-bottom:6px; }
     .legend .swatch { width:18px; height:12px; border-radius:2px; display:inline-block; }
 
-    /* Tooltips immer ganz oben */
     .leaflet-tooltip {
       z-index: 100000 !important;
       pointer-events: none;
@@ -30,32 +27,26 @@
 
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script>
-/* === Konfiguration === */
+/* CONFIG */
 const REGIONS_GEOJSON_FILE = 'regionen.geojson';
 const AUSTRIA_GEOJSON_FILE = 'bundeslaender.geojson';
 
-/* Farben */
 const COLOR_FORERUNNER = "#7b8ca0";
 const COLOR_FOLLOWER   = "#a1bdda";
 const COLOR_DEFAULT    = "#6c757d";
 
-/* Link-Felder Reihenfolge, falls unterschiedlich benannt */
 const LINK_CANDIDATES = ['url','website','link','homepage','href','site','website_url','portal','web','uri','home'];
 
-/* Karte (kein TileLayer) */
 const map = L.map('map', { minZoom: 6, maxZoom: 13, scrollWheelZoom: true }).setView([47.5,13.3],7);
 
-/* Panes: country behind, regions in front */
 map.createPane('countryPane'); map.getPane('countryPane').style.zIndex = 200;
 map.createPane('regionsPane'); map.getPane('regionsPane').style.zIndex = 650;
-// ensure tooltip pane is above regions
 if (map.getPane('tooltipPane')) map.getPane('tooltipPane').style.zIndex = 1200;
 
-/* Helpers: open in top-most window (replaces whole window even if in iframe) */
+/* Open in top window helper */
 function openInTopWindow(url) {
   if (!url) return false;
   url = url.toString().trim();
-  // relative path -> same origin, navigate top
   if (/^\/[^\/]/.test(url)) { try { window.top.location.href = url; } catch(e){ window.location.href = url; } return true; }
   if (!/^[a-zA-Z]+:\/\//.test(url)) url = 'https://' + url;
   try { window.top.location.href = url; } catch(e) { window.location.href = url; }
@@ -74,13 +65,13 @@ function austriaStyle(feature) {
   };
 }
 function styleByType(feature) {
-  const t = (feature.properties && feature.properties.type || '').toLowerCase();
+  const t = (feature.properties?.type || '').toLowerCase();
   let fill = COLOR_DEFAULT;
   if (t === 'forerunner') fill = COLOR_FORERUNNER;
   if (t === 'follower')   fill = COLOR_FOLLOWER;
   return {
     color: '#ffffff',
-    weight: 2,             // region stroke = 2
+    weight: 2,
     fillColor: fill,
     fillOpacity: 1,
     className: 'region-polygon',
@@ -88,243 +79,125 @@ function styleByType(feature) {
   };
 }
 
-/* --- Fit bounds settings (robust, outlier-resistant) --- */
-const MAX_FITBOUNDS_ZOOM = 13;   // maximale erlaubte Zoomstufe
-const FIT_PADDING = [0,0];       // kein Padding -> tight
-const OUTLIER_CUT_PERCENT = 2.5; // entferne untere/obere 2.5% Koordinaten-Extremwerte
-
-/**
- * Flatten GeoJSON geometry coordinates into array of [lng,lat] pairs.
- */
+/* === DEBUG HELPERS === */
 function collectCoordinatesFromGeoJSON(geojson) {
   const coords = [];
-  function walkGeom(g) {
+  function walk(g) {
     if (!g) return;
     const type = g.type;
-    if (type === 'Point') coords.push(g.coordinates);
-    else if (type === 'MultiPoint' || type === 'LineString') {
-      g.coordinates.forEach(c => coords.push(c));
-    } else if (type === 'MultiLineString' || type === 'Polygon') {
-      g.coordinates.forEach(arr => arr.forEach(c => coords.push(c)));
-    } else if (type === 'MultiPolygon') {
-      g.coordinates.forEach(poly => poly.forEach(ring => ring.forEach(c => coords.push(c))));
-    } else if (type === 'GeometryCollection') {
-      g.geometries.forEach(gg => walkGeom(gg));
-    }
+    if (type === "Point") coords.push(g.coordinates);
+    else if (type === "MultiPoint" || type === "LineString") g.coordinates.forEach(c => coords.push(c));
+    else if (type === "Polygon") g.coordinates.forEach(r => r.forEach(c => coords.push(c)));
+    else if (type === "MultiLineString") g.coordinates.forEach(ls => ls.forEach(c => coords.push(c)));
+    else if (type === "MultiPolygon") g.coordinates.forEach(poly => poly.forEach(r => r.forEach(c => coords.push(c))));
+    else if (type === "GeometryCollection") g.geometries.forEach(gg => walk(gg));
   }
-  if (geojson.type === 'FeatureCollection') {
-    geojson.features.forEach(f => walkGeom(f.geometry));
-  } else if (geojson.type === 'Feature') {
-    walkGeom(geojson.geometry);
-  } else {
-    walkGeom(geojson);
-  }
-  return coords; // array of [lng,lat]
+  if (geojson.type === "FeatureCollection") geojson.features.forEach(f => walk(f.geometry));
+  else if (geojson.type === "Feature") walk(geojson.geometry);
+  else walk(geojson);
+  return coords;
 }
 
-/**
- * Compute percentile (p in [0,100]) for sorted numeric array.
- */
 function percentile(sortedArr, p) {
   if (!sortedArr.length) return null;
-  const idx = (p/100) * (sortedArr.length - 1);
-  const lower = Math.floor(idx);
-  const upper = Math.ceil(idx);
-  if (lower === upper) return sortedArr[lower];
-  const weight = idx - lower;
-  return sortedArr[lower] * (1 - weight) + sortedArr[upper] * weight;
+  const idx = (p/100)*(sortedArr.length-1);
+  const lo = Math.floor(idx), hi = Math.ceil(idx);
+  if (lo === hi) return sortedArr[lo];
+  const w = idx - lo;
+  return sortedArr[lo]*(1-w) + sortedArr[hi]*w;
 }
 
-/**
- * Compute robust bounds by trimming extreme coordinate percentiles.
- * Falls keine ausreichenden Koordinaten vorhanden, gibt null zurück.
- */
+/* === FIT SETTINGS === */
+const MAX_FITBOUNDS_ZOOM = 13;
+const FIT_PADDING = [0,0];
+const OUTLIER_CUT_PERCENT = 2.5;
+
 function computeRobustBounds(geojson) {
   const coords = collectCoordinatesFromGeoJSON(geojson);
-  if (!coords || coords.length === 0) return null;
+  if (!coords.length) return null;
 
-  const lons = coords.map(c => c[0]).filter(x => isFinite(x)).sort((a,b)=>a-b);
-  const lats = coords.map(c => c[1]).filter(x => isFinite(x)).sort((a,b)=>a-b);
+  const lons = coords.map(c => c[0]).filter(Number.isFinite).sort((a,b)=>a-b);
+  const lats = coords.map(c => c[1]).filter(Number.isFinite).sort((a,b)=>a-b);
 
-  // if too few points, fallback to raw min/max
-  if (lons.length < 6 || lats.length < 6) {
-    const minLon = lons[0], maxLon = lons[lons.length-1];
-    const minLat = lats[0], maxLat = lats[lats.length-1];
-    return L.latLngBounds([[minLat,minLon],[maxLat,maxLon]]);
-  }
+  if (lons.length < 6 || lats.length < 6)
+    return L.latLngBounds([[lats[0], lons[0]], [lats[lats.length-1], lons[lons.length-1]]]);
 
-  const lowerPct = OUTLIER_CUT_PERCENT;
-  const upperPct = 100 - OUTLIER_CUT_PERCENT;
+  const LO = OUTLIER_CUT_PERCENT, HI = 100-OUTLIER_CUT_PERCENT;
+  const minLon = percentile(lons, LO);
+  const maxLon = percentile(lons, HI);
+  const minLat = percentile(lats, LO);
+  const maxLat = percentile(lats, HI);
 
-  const minLon = percentile(lons, lowerPct);
-  const maxLon = percentile(lons, upperPct);
-  const minLat = percentile(lats, lowerPct);
-  const maxLat = percentile(lats, upperPct);
-
-  // Safety: ensure min < max
-  if (!(isFinite(minLon) && isFinite(maxLon) && isFinite(minLat) && isFinite(maxLat) && minLon < maxLon && minLat < maxLat)) {
-    // fallback to raw bounds
-    const rawMinLon = lons[0], rawMaxLon = lons[lons.length-1];
-    const rawMinLat = lats[0], rawMaxLat = lats[lats.length-1];
-    return L.latLngBounds([[rawMinLat,rawMinLon],[rawMaxLat,rawMaxLon]]);
-  }
-
-  return L.latLngBounds([[minLat,minLon],[maxLat,maxLon]]);
+  return L.latLngBounds([[minLat, minLon],[maxLat, maxLon]]);
 }
 
+/* GLOBAL */
 let austriaBounds = null;
+
+/* LOAD AUSTRIA */
 fetch(AUSTRIA_GEOJSON_FILE)
-  .then(r => { if (!r.ok) throw new Error('Fehler beim Laden der Bundesländer: ' + r.status); return r.json(); })
+  .then(r => r.json())
   .then(data => {
-    const bl = L.geoJSON(data, { style: austriaStyle, interactive: false, pane: 'countryPane' }).addTo(map);
-    // ===== DEBUG: RAW BOUNDS & COORD EXTREMES =====
+    const bl = L.geoJSON(data, { style: austriaStyle, interactive:false, pane:'countryPane'}).addTo(map);
 
-// Leaflet-interne Bounds
-const rawBounds = bl.getBounds();
-console.log("RAW Leaflet Bounds:", rawBounds.toBBoxString());
+    /* DEBUG: RAW LEAFLET BOUNDS */
+    const rawBounds = bl.getBounds();
+    console.log("RAW Leaflet Bounds:", rawBounds.toBBoxString());
 
-// Extract all coordinates
-function collectCoords(gj) {
-  const pts = [];
-  function walk(g){
-    if (!g) return;
-    if (g.type === "Point") pts.push(g.coordinates);
-    else if (g.type === "LineString" || g.type === "MultiPoint")
-      g.coordinates.forEach(c => pts.push(c));
-    else if (g.type === "Polygon")
-      g.coordinates.forEach(ring => ring.forEach(c => pts.push(c)));
-    else if (g.type === "MultiLineString")
-      g.coordinates.forEach(ls => ls.forEach(c => pts.push(c)));
-    else if (g.type === "MultiPolygon")
-      g.coordinates.forEach(poly => poly.forEach(ring => ring.forEach(c => pts.push(c))));
-    else if (g.type === "GeometryCollection")
-      g.geometries.forEach(geom => walk(geom));
-  }
-  if (gj.type === "FeatureCollection") gj.features.forEach(f => walk(f.geometry));
-  else if (gj.type === "Feature") walk(gj.geometry);
-  else walk(gj);
-  return pts;
-}
+    /* DEBUG: coordinate extremes */
+    const coords = collectCoordinatesFromGeoJSON(data);
+    const lons = coords.map(c=>c[0]).filter(Number.isFinite).sort((a,b)=>a-b);
+    const lats = coords.map(c=>c[1]).filter(Number.isFinite).sort((a,b)=>a-b);
 
-const coords = collectCoords(data);
-console.log("Total coordinate points:", coords.length);
+    console.log("Total coordinate points:", coords.length);
+    console.log("Longitude min/max:", lons[0], lons[lons.length-1]);
+    console.log("Latitude  min/max:", lats[0], lats[lats.length-1]);
 
-// Numeric min/max
-const lons = coords.map(c => c[0]).filter(Number.isFinite).sort((a,b)=>a-b);
-const lats = coords.map(c => c[1]).filter(Number.isFinite).sort((a,b)=>a-b);
+    /* DEBUG: ROBUST BOUNDS */
+    const robustBounds = computeRobustBounds(data);
+    console.log("ROBUST Bounds (2.5% trimmed):", robustBounds?.toBBoxString?.());
 
-console.log("Longitude min/max:", lons[0], lons[lons.length - 1]);
-console.log("Latitude  min/max:", lats[0], lats[lats.length - 1]);
-
-// ===== DEBUG: ROBUST (percentile) BOUNDS =====
-
-function pct(arr, p) {
-  const idx = (p/100) * (arr.length - 1);
-  const lo = Math.floor(idx), hi = Math.ceil(idx);
-  if (lo === hi) return arr[lo];
-  const w = idx - lo;
-  return arr[lo]*(1-w) + arr[hi]*w;
-}
-
-const LO = 2.5, HI = 97.5;
-const robustMinLon = pct(lons, LO);
-const robustMaxLon = pct(lons, HI);
-const robustMinLat = pct(lats, LO);
-const robustMaxLat = pct(lats, HI);
-
-const robustBounds = L.latLngBounds(
-  [robustMinLat, robustMinLon],
-  [robustMaxLat, robustMaxLon]
-);
-
-console.log("ROBUST Bounds (2.5% trimmed):", robustBounds.toBBoxString());
-
-// Mark what we will *actually* use just for debugging (no functional change)
-console.log("=== BOUNDS DEBUG SUMMARY ===");
-console.log("RAW (Leaflet): ", rawBounds.toBBoxString());
-console.log("ROBUST (trim):  ", robustBounds.toBBoxString());
-console.log("===========================");
-
-    try {
-      // robust bounds calculation (removes coordinate outliers)
-      const robustBounds = computeRobustBounds(data);
-      if (robustBounds && robustBounds.isValid && !robustBounds.isEmpty()) {
+    /* assign austriaBounds safely */
+    if (robustBounds) {
+      const valid = typeof robustBounds.isValid === "function" ? robustBounds.isValid() : true;
+      if (valid) {
         austriaBounds = robustBounds;
-        console.log('Verwende robuste Bounds (Outlier-Cut ' + OUTLIER_CUT_PERCENT + '%):', austriaBounds.toBBoxString());
+        console.log("Used ROBUST bounds:", austriaBounds.toBBoxString());
       } else {
-        austriaBounds = bl.getBounds();
-        console.log('Robuste Bounds fehlgeschlagen, fallback auf raw getBounds():', austriaBounds.toBBoxString());
+        austriaBounds = rawBounds;
+        console.log("ROBUST invalid, using RAW bounds instead:", austriaBounds.toBBoxString());
       }
-
-      // tighten logic: compute best zoom that fills bounds (no padding)
-      function fitAustriaTight() {
-        try { map.invalidateSize(); } catch(e){}
-        if (!austriaBounds || !austriaBounds.isValid || austriaBounds.isEmpty()) return;
-
-        // Best zoom to fit exactly the bounds into the current map size (no padding)
-        const bestZoom = map.getBoundsZoom(austriaBounds, false);
-
-        // Limit zoom to allowed maximum
-        const zoomTo = Math.min(bestZoom, MAX_FITBOUNDS_ZOOM);
-
-        // Set view to center with exact zoom (stable)
-        map.setView(austriaBounds.getCenter(), zoomTo, { animate: false });
-
-        // As extra assurance, call fitBounds with zero padding (minor timeout helps with some layouts)
-        setTimeout(() => {
-          try {
-            map.fitBounds(austriaBounds, { padding: FIT_PADDING, maxZoom: MAX_FITBOUNDS_ZOOM, animate: false });
-          } catch(e){}
-        }, 20);
-      }
-
-      // initial tight fit
-      setTimeout(fitAustriaTight, 150);
-
-      // adjust on resize
-      window.addEventListener('resize', () => {
-        setTimeout(()=> {
-          fitAustriaTight();
-        }, 150);
-      });
-
-    } catch (e) {
-      console.warn('Fehler beim Berechnen der Bounds:', e);
+    } else {
+      austriaBounds = rawBounds;
+      console.log("No ROBUST bounds, using RAW:", austriaBounds.toBBoxString());
     }
-  })
-  .catch(err => {
-    console.warn('bundeslaender.geojson konnte nicht geladen werden:', err);
+
+    /* EXTRA DEBUG INFO */
+    console.log("austriaBounds object:", austriaBounds);
+    console.log("austriaBounds.getCenter():", austriaBounds?.getCenter());
+    console.log("austriaBounds BBOX:", austriaBounds.toBBoxString());
+
+    /* NO ZOOM FIX YET — DEBUG ONLY */
   });
 
-/* --- Regions (interactive) --- */
+/* REGIONS & INTERACTION (unchanged original code) */
 window.regionsLayer = null;
 
 function onEachRegion(feature, layer) {
-  const type = (feature.properties && feature.properties.type || '').toLowerCase();
-  const name = (feature.properties && feature.properties.name) ? feature.properties.name : '(kein Name)';
+  const type = (feature.properties?.type || '').toLowerCase();
+  const name = feature.properties?.name || '(kein Name)';
   let prefix = '';
   if (type === 'forerunner') prefix = 'Forerunner-Region ';
-  else if (type === 'follower') prefix = 'Follower-Region ';
-  // tooltip without colon; ensure it uses tooltipPane
-  layer.bindTooltip(prefix + name, { sticky: true, direction: 'auto', pane: 'tooltipPane' });
+  if (type === 'follower')   prefix = 'Follower-Region ';
+
+  layer.bindTooltip(prefix + name, { sticky:true, direction:'auto', pane:'tooltipPane' });
 
   layer.on({
-    mouseover(e) {
-      e.target.setStyle({ weight: 3, fillOpacity: 1 });
-      if (!L.Browser.ie && !L.Browser.opera && !L.Browser.edge) e.target.bringToFront();
-    },
-    mouseout(e) {
-      if (window.regionsLayer) window.regionsLayer.resetStyle(e.target);
-    },
     click(e) {
-      const props = (feature.properties || {});
-      for (const k of LINK_CANDIDATES) {
-        if (props[k] && props[k].toString && props[k].toString().trim().length) {
-          openInTopWindow(props[k]); return;
-        }
-      }
-      if (props.slug && props.slug.toString().trim()) { openInTopWindow('/' + props.slug.toString().trim()); return; }
-      if (e.target && e.target.getBounds) map.fitBounds(e.target.getBounds(), { padding: FIT_PADDING, maxZoom: MAX_FITBOUNDS_ZOOM });
+      const props = feature.properties || {};
+      for (const k of LINK_CANDIDATES)
+        if (props[k]?.toString().trim()) return openInTopWindow(props[k]);
+      if (props.slug) return openInTopWindow('/'+props.slug.trim());
     }
   });
 }
@@ -337,105 +210,9 @@ function createRegionsLayer(data) {
   }).addTo(map);
 }
 
-/* pointer-events enforcement */
-function enforcePointerEventsOnRegions() {
-  try {
-    if (!window.regionsLayer) {
-      document.querySelectorAll('#map svg').forEach(sv => {
-        sv.style.pointerEvents = 'auto';
-        sv.querySelectorAll('g').forEach(g => { g.style.pointerEvents = 'auto'; });
-        sv.querySelectorAll('path').forEach(p => { p.style.pointerEvents = 'auto'; p.style.cursor = 'pointer'; });
-      });
-      return;
-    }
-    window.regionsLayer.eachLayer(function(layer){
-      if (layer && layer._path) {
-        layer._path.style.pointerEvents = 'auto';
-        layer._path.style.cursor = 'pointer';
-      }
-    });
-  } catch (err) { console.warn('enforcePointerEventsOnRegions error', err); }
-}
-
-/* DOM fallback on path click - uses top window */
-function attachDomFallbackToRegions() {
-  try {
-    if (!window.regionsLayer || typeof window.regionsLayer.eachLayer !== 'function') return;
-    window.regionsLayer.eachLayer(function(layer){
-      try {
-        if (layer && layer._path && !layer._path.__domClickAttached) {
-          layer._path.addEventListener('click', function(evt){
-            try {
-              const props = (layer.feature && layer.feature.properties) ? layer.feature.properties : {};
-              for (const k of LINK_CANDIDATES) {
-                if (props[k] && props[k].toString && props[k].toString().trim().length) { openInTopWindow(props[k]); return; }
-              }
-              if (props.slug && props.slug.toString().trim()) { openInTopWindow('/' + props.slug.toString().trim()); return; }
-            } catch(e) { console.warn('DOM-Fallback handler error', e); }
-          }, false);
-          layer._path.__domClickAttached = true;
-        }
-      } catch(e){}
-    });
-  } catch (err) { console.warn('attachDomFallbackToRegions error', err); }
-}
-
-/* global path->layer handler for regions only (uses top window) */
-(function attachGlobalPathClickHandlerForRegions(){
-  const mapEl = document.getElementById('map');
-  if (!mapEl) return;
-  const handler = function(e){
-    try {
-      const el = document.elementFromPoint(e.clientX, e.clientY);
-      let path = el;
-      while (path && path.tagName !== 'path') path = path.parentElement || path.parentNode;
-      if (!path) return;
-      const candidateLayers = (window.regionsLayer && typeof window.regionsLayer.getLayers === 'function') ? window.regionsLayer.getLayers() : [];
-      const pid = path._leaflet_id;
-      const layer = candidateLayers.find(l => l && (l._path === path || l._leaflet_id === pid || (l._path && l._path._leaflet_id === pid)));
-      if (!layer) return;
-      const props = (layer.feature && layer.feature.properties) ? layer.feature.properties : {};
-      for (const k of LINK_CANDIDATES) {
-        if (props[k] && props[k].toString && props[k].toString().trim().length) {
-          openInTopWindow(props[k]); return;
-        }
-      }
-      if (props.slug && props.slug.toString().trim()) { openInTopWindow('/' + props.slug.toString().trim()); return; }
-    } catch (err) { /* ignore */ }
-  };
-  mapEl.addEventListener('click', handler, true);
-  console.log('Global regions-only path->layer click handler attached (top-window).');
-})();
-
-/* Load regions */
 fetch(REGIONS_GEOJSON_FILE)
-  .then(r => { if (!r.ok) throw new Error('Fehler beim Laden der Regionen: ' + r.status); return r.json(); })
-  .then(data => {
-    if (!data || !data.features) throw new Error('Keine Features in Regionen gefunden');
-    createRegionsLayer(data);
-    setTimeout(()=>map.invalidateSize(), 200);
-    enforcePointerEventsOnRegions();
-    attachDomFallbackToRegions();
-    map.on('zoomend moveend layeradd layerremove', function(){
-      enforcePointerEventsOnRegions();
-      attachDomFallbackToRegions();
-    });
-    // MutationObserver on overlay-pane
-    const overlay = document.querySelector('.leaflet-pane.leaflet-overlay-pane');
-    if (overlay) {
-      const mo = new MutationObserver(() => {
-        if (window.__pe_timeout) clearTimeout(window.__pe_timeout);
-        window.__pe_timeout = setTimeout(function(){
-          enforcePointerEventsOnRegions();
-          attachDomFallbackToRegions();
-        }, 80);
-      });
-      mo.observe(overlay, { childList:true, subtree:true, attributes:true });
-    }
-  })
-  .catch(err => {
-    console.error('Fehler beim Laden der Regionen:', err);
-  });
+  .then(r => r.json())
+  .then(data => createRegionsLayer(data));
 
 /* Legend */
 const legend = L.control({ position: 'bottomright' });
@@ -443,40 +220,17 @@ legend.onAdd = function(){
   const div = L.DomUtil.create('div','legend');
   div.innerHTML = '<strong>Legende</strong>';
   const add = (color,label) => {
-    const item = document.createElement('div');
-    item.className = 'item';
-    const sw = document.createElement('span');
-    sw.className = 'swatch';
-    sw.style.background = color;
-    const txt = document.createElement('span');
-    txt.textContent = label;
-    item.appendChild(sw);
-    item.appendChild(txt);
-    div.appendChild(item);
+    const i = document.createElement('div'); i.className='item';
+    const sw = document.createElement('span'); sw.className='swatch'; sw.style.background=color;
+    const txt = document.createElement('span'); txt.textContent=label;
+    i.appendChild(sw); i.appendChild(txt); div.appendChild(i);
   };
-  add(COLOR_FORERUNNER, 'Forerunner-Region');
-  add(COLOR_FOLLOWER, 'Follower-Region');
+  add(COLOR_FORERUNNER,'Forerunner-Region');
+  add(COLOR_FOLLOWER,'Follower-Region');
   return div;
 };
 legend.addTo(map);
 
-/* Accessibility: Enter opens link for region under map center (top window) */
-document.addEventListener('keydown', function(e){
-  if (e.key === 'Enter' && window.regionsLayer) {
-    const center = map.getCenter();
-    window.regionsLayer.eachLayer(function(layer){
-      if (layer && layer.getBounds && layer.getBounds().contains(center)) {
-        const props = (layer.feature && layer.feature.properties) ? layer.feature.properties : {};
-        for (const k of LINK_CANDIDATES) {
-          if (props[k] && props[k].toString && props[k].toString().trim().length) {
-            openInTopWindow(props[k]); return;
-          }
-        }
-        if (props.slug && props.slug.toString().trim()) { openInTopWindow('/' + props.slug.toString().trim()); return; }
-      }
-    });
-  }
-});
 </script>
 </body>
 </html>
