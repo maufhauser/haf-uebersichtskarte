@@ -8,65 +8,45 @@
   <style>
     html,body { height:100%; margin:0; font-family:system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial; }
     #map { width:100%; height:100vh; }
-    .info-box { position:absolute; left:12px; top:12px; z-index:1000; background:rgba(255,255,255,0.95); padding:8px 12px; border-radius:6px; box-shadow:0 2px 8px rgba(0,0,0,0.12); pointer-events:none; }
+    /* Hinweis/Infobox entfernt auf Benutzerwunsch */
     .legend { background: white; padding:8px 10px; border-radius:6px; box-shadow:0 1px 6px rgba(0,0,0,0.15); font-size:14px; }
+    .legend .item { display:flex; align-items:center; gap:8px; margin-bottom:6px; }
+    .legend .swatch { width:18px; height:12px; border-radius:2px; display:inline-block; }
     @media (max-width:700px){ .legend { font-size:13px; padding:6px 8px; } }
   </style>
 </head>
 <body>
 
 <div id="map" role="application" aria-label="Interaktive Übersichtskarte"></div>
-<div class="info-box" id="infobox">Bewege die Maus über eine Region</div>
 
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script>
 /* === Konfiguration === */
-const REGIONS_GEOJSON_FILE = 'regionen.geojson';        // interaktive Regionen (5 Features mit url)
-const AUSTRIA_GEOJSON_FILE = 'bundeslaender.geojson';  // nur Hintergrund (9 Features)
-
-/* DOM */
-const infoBox = document.getElementById('infobox');
+const REGIONS_GEOJSON_FILE = 'regionen.geojson';        // interaktive Regionen
+const AUSTRIA_GEOJSON_FILE = 'bundeslaender.geojson';  // Hintergrund (komplettes Österreich)
 
 /* Karte */
 const map = L.map('map', { minZoom:6, maxZoom:13, scrollWheelZoom:true }).setView([47.5,13.3],7);
 L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { attribution: '&copy; OpenStreetMap contributors' }).addTo(map);
 
-/* Farben / Style */
-const COLOR_FORERUNNER = "#d9534f", COLOR_FOLLOWER = "#0275d8", COLOR_DEFAULT = "#6c757d";
+/* Farben: aktualisiert nach Wunsch */
+const COLOR_FORERUNNER = "#7b8ca0";
+const COLOR_FOLLOWER   = "#a1bdda";
+const COLOR_DEFAULT    = "#6c757d";
+
+/* Style-Funktion für Regionen */
 function styleByType(feature) {
   const t = (feature.properties && feature.properties.type || '').toLowerCase();
   let fill = COLOR_DEFAULT;
   if (t === 'forerunner') fill = COLOR_FORERUNNER;
-  if (t === 'follower') fill = COLOR_FOLLOWER;
+  if (t === 'follower')   fill = COLOR_FOLLOWER;
   return { color:'#ffffff', weight:1, fillColor: fill, fillOpacity:0.65, className: 'region-polygon' };
 }
-
-/* --- Nicht-interaktive Bundesländer (Hintergrund) laden --- */
-fetch(AUSTRIA_GEOJSON_FILE)
-  .then(r => {
-    if (!r.ok) throw new Error('Fehler beim Laden der Bundesländer: ' + r.status);
-    return r.json();
-  })
-  .then(data => {
-    // style: outline, transparent fill; interactive: false -> keine Events
-    L.geoJSON(data, {
-      style: function(){ return { color:'#333', weight:1, fillOpacity:0 }; },
-      interactive: false // WICHTIG: keine Interaktion
-    }).addTo(map);
-  })
-  .catch(err => {
-    console.warn('bundeslaender.geojson nicht geladen oder fehlgeschlagen:', err);
-    // ignore - Karte funktioniert trotzdem
-  });
-
-/* --- Regions Layer (interaktiv) --- */
-/* expose global für Debug / Console */
-window.regionsLayer = null;
 
 /* Link-Erkennungsliste (prüft nacheinander) */
 const LINK_CANDIDATES = ['url','website','link','homepage','href','site','website_url','portal','web','uri','home'];
 
-/* Link öffnen (öffnet in neuem Tab). Wenn du statt neuem Tab gleiches Tab willst: window.location.href = url; */
+/* openLink: öffnet in neuem Tab; wenn du stattdessen im selben Tab willst, ersetze durch window.location.href = url; */
 function openLink(url) {
   if (!url) return false;
   url = url.toString().trim();
@@ -76,27 +56,62 @@ function openLink(url) {
   return true;
 }
 
-/* onEachFeature für Regionen */
+/* --- Hintergrund: Bundesländer (non-interactive) --- */
+let austriaBounds = null;
+fetch(AUSTRIA_GEOJSON_FILE)
+  .then(r => { if (!r.ok) throw new Error('Fehler beim Laden der Bundesländer: ' + r.status); return r.json(); })
+  .then(data => {
+    const bl = L.geoJSON(data, {
+      style: function(){ return { color:'#333', weight:1, fillOpacity:0 }; },
+      interactive: false // sehr wichtig: keine Maus-/Click-Events für Hintergrund
+    }).addTo(map);
+    try {
+      austriaBounds = bl.getBounds();
+      if (austriaBounds && austriaBounds.isValid && !austriaBounds.isEmpty()) {
+        map.fitBounds(austriaBounds, { padding: [20,20] });
+      }
+      // bei Resize: immer wieder Austria vollständig zeigen
+      window.addEventListener('resize', () => {
+        setTimeout(()=> {
+          map.invalidateSize();
+          if (austriaBounds) map.fitBounds(austriaBounds, { padding: [20,20] });
+        }, 120);
+      });
+    } catch(e) { /* ignore */ }
+  })
+  .catch(err => {
+    console.warn('bundeslaender.geojson konnte nicht geladen werden:', err);
+  });
+
+/* --- Regions Layer (interaktiv) --- */
+/* expose global für Debug / Console */
+window.regionsLayer = null;
+
+/* onEachFeature: Tooltip + click */
 function onEachRegion(feature, layer) {
-  const name = (feature.properties && feature.properties.name) ? feature.properties.name : 'Region';
-  layer.bindTooltip(name, { sticky:true, direction:'auto' });
+  // tooltip: prepend Forerunner-/Follower- based on properties.type
+  const type = (feature.properties && feature.properties.type || '').toLowerCase();
+  const name = (feature.properties && feature.properties.name) ? feature.properties.name : '(kein Name)';
+  let prefix = '';
+  if (type === 'forerunner') prefix = 'Forerunner-Region: ';
+  else if (type === 'follower') prefix = 'Follower-Region: ';
+  else prefix = ''; // falls type fehlt, kein Prefix
+
+  layer.bindTooltip(prefix + name, { sticky:true, direction:'auto' });
 
   layer.on({
     mouseover(e) {
       e.target.setStyle({ weight:3, fillOpacity:0.85 });
       if (!L.Browser.ie && !L.Browser.opera && !L.Browser.edge) e.target.bringToFront();
-      infoBox.textContent = name;
     },
     mouseout(e) {
       if (window.regionsLayer) window.regionsLayer.resetStyle(e.target);
-      infoBox.textContent = 'Bewege die Maus über eine Region';
     },
     click(e) {
       const props = (feature.properties || {});
       for (const k of LINK_CANDIDATES) {
         if (props[k] && props[k].toString && props[k].toString().trim().length) {
-          openLink(props[k]);
-          return;
+          openLink(props[k]); return;
         }
       }
       if (props.slug && props.slug.toString().trim()) { openLink('/' + props.slug.toString().trim()); return; }
@@ -105,11 +120,11 @@ function onEachRegion(feature, layer) {
   });
 }
 
-/* enforce pointer-events (nur für regionsLayer) */
+/* enforce pointer-events nur für regionsLayer (robust) */
 function enforcePointerEventsOnRegions() {
   try {
     if (!window.regionsLayer) {
-      // fallback: ensure any SVG paths in #map accept pointer-events
+      // fallback: ensure any svg paths accept pointer-events
       document.querySelectorAll('#map svg').forEach(sv => {
         sv.style.pointerEvents = 'auto';
         sv.querySelectorAll('g').forEach(g => { g.style.pointerEvents = 'auto'; });
@@ -128,7 +143,7 @@ function enforcePointerEventsOnRegions() {
   }
 }
 
-/* DOM-Fallback: direkt an path click binden (nur regionsLayer) */
+/* attach DOM fallback click on path elements (only for regionsLayer) */
 function attachDomFallbackToRegions() {
   try {
     if (!window.regionsLayer || typeof window.regionsLayer.eachLayer !== 'function') return;
@@ -139,12 +154,10 @@ function attachDomFallbackToRegions() {
             try {
               const props = (layer.feature && layer.feature.properties) ? layer.feature.properties : {};
               for (const k of LINK_CANDIDATES) {
-                if (props[k] && props[k].toString && props[k].toString().trim().length) {
-                  openLink(props[k]); return;
-                }
+                if (props[k] && props[k].toString && props[k].toString().trim().length) { openLink(props[k]); return; }
               }
               if (props.slug && props.slug.toString().trim()) { openLink('/' + props.slug.toString().trim()); return; }
-            } catch(e){ console.warn('DOM-Fallback handler error', e); }
+            } catch (e) { console.warn('DOM-Fallback handler error', e); }
           }, false);
           layer._path.__domClickAttached = true;
         }
@@ -153,7 +166,7 @@ function attachDomFallbackToRegions() {
   } catch (err) { console.warn('attachDomFallbackToRegions error', err); }
 }
 
-/* global path->layer handler aber NUR in regionsLayer (extra fallback) */
+/* global path->layer click handler but ONLY checking regionsLayer (extra fallback) */
 (function attachGlobalPathClickHandlerForRegions(){
   const mapEl = document.getElementById('map');
   if (!mapEl) return;
@@ -163,10 +176,7 @@ function attachDomFallbackToRegions() {
       let path = el;
       while (path && path.tagName !== 'path') path = path.parentElement || path.parentNode;
       if (!path) return;
-      // Try to find layer only among regionsLayer
-      const candidateLayers = (window.regionsLayer && typeof window.regionsLayer.getLayers === 'function')
-        ? window.regionsLayer.getLayers()
-        : [];
+      const candidateLayers = (window.regionsLayer && typeof window.regionsLayer.getLayers === 'function') ? window.regionsLayer.getLayers() : [];
       const pid = path._leaflet_id;
       const layer = candidateLayers.find(l => l && (l._path === path || l._leaflet_id === pid || (l._path && l._path._leaflet_id === pid)));
       if (!layer) return;
@@ -183,36 +193,26 @@ function attachDomFallbackToRegions() {
   console.log('Global regions-only path->layer click handler attached.');
 })();
 
-/* --- Load regions GeoJSON (interaktiv) --- */
+/* --- Load regions GeoJSON (interactive) --- */
 fetch(REGIONS_GEOJSON_FILE)
   .then(r => { if (!r.ok) throw new Error('Fehler beim Laden der Regionen: ' + r.status); return r.json(); })
   .then(data => {
     if (!data || !data.features) throw new Error('Keine Features in Regionen gefunden');
-    // regionsLayer als interaktives GeoJSON
-    window.regionsLayer = L.geoJSON(data, {
-      style: styleByType,
-      onEachFeature: onEachRegion
-    }).addTo(map);
+    window.regionsLayer = L.geoJSON(data, { style: styleByType, onEachFeature: onEachRegion }).addTo(map);
 
-    // zoom to regions
-    try {
-      const b = window.regionsLayer.getBounds();
-      if (b && b.isValid && !b.isEmpty()) map.fitBounds(b, { padding:[30,30] });
-    } catch(e){/* ignore */ }
-
+    // DO NOT override austriaBounds here — keep the view of the full country.
+    // Apply fixes & fallbacks for regions
     setTimeout(()=>map.invalidateSize(), 200);
-
-    // apply fixes & fallbacks (nur für regions)
     enforcePointerEventsOnRegions();
     attachDomFallbackToRegions();
 
-    // reapply bei map events
+    // Reapply on events (in case Leaflet rewrites SVG)
     map.on('zoomend moveend layeradd layerremove', function(){
       enforcePointerEventsOnRegions();
       attachDomFallbackToRegions();
     });
 
-    // MutationObserver auf overlay pane (best-effort)
+    // MutationObserver on overlay-pane (best-effort)
     const overlay = document.querySelector('.leaflet-pane.leaflet-overlay-pane');
     if (overlay) {
       const mo = new MutationObserver(() => {
@@ -239,7 +239,7 @@ fetch(REGIONS_GEOJSON_FILE)
     wrapper.appendChild(note);
   });
 
-/* kleine Legend (optional) */
+/* Legend (optional) */
 const legend = L.control({ position: 'bottomright' });
 legend.onAdd = function(){
   const div = L.DomUtil.create('div','legend');
@@ -262,7 +262,7 @@ legend.onAdd = function(){
 };
 legend.addTo(map);
 
-/* Accessibility: Enter öffnet Link der Region unter Kartenmittelpunkt */
+/* Accessibility: Enter öffnet Link der Region unter Kartenmittelpunkt (best-effort) */
 document.addEventListener('keydown', function(e){
   if (e.key === 'Enter' && window.regionsLayer) {
     const center = map.getCenter();
