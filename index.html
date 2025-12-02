@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>HAF Alp Tour — Übersichtskarte</title>
+
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+  <style>
+    html,body{height:100%;margin:0}
+    #map{width:100%;height:100vh;min-height:500px}
+    .legend{background:white;padding:8px;border-radius:6px;box-shadow:0 1px 4px rgba(0,0,0,0.2);font-size:14px}
+    .legend .item{display:flex;align-items:center;margin-bottom:6px}
+    .legend .swatch{width:18px;height:12px;margin-right:8px;border-radius:2px}
+    .clickable-region{cursor:pointer}
+  </style>
+</head>
+<body>
+  <div id="map"></div>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script>
+  (function(){
+    const URL_REGIONS = "regionen.geojson";          // RELATIV in repo
+    const URL_AUSTRIA = "bundeslaender.geojson";     // RELATIV in repo
+
+    const COLOR_FORERUNNER = "#d9534f";
+    const COLOR_FOLLOWER   = "#0275d8";
+    const COLOR_DEFAULT    = "#6c757d";
+
+    const map = L.map('map',{minZoom:6,maxZoom:12,scrollWheelZoom:false}).setView([47.5,13.3],7);
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{
+      attribution: '&copy; OpenStreetMap contributors'
+    }).addTo(map);
+
+    function styleByType(feature){
+      const t = (feature.properties && feature.properties.type || "").toLowerCase();
+      let fill = COLOR_DEFAULT;
+      if(t==="forerunner") fill = COLOR_FORERUNNER;
+      if(t==="follower") fill = COLOR_FOLLOWER;
+      return { color:"#ffffff", weight:1, fillColor:fill, fillOpacity:0.6, className:'clickable-region' };
+    }
+    let regionsLayer;
+
+    function onEach(feature, layer){
+      const name = feature.properties && feature.properties.name ? feature.properties.name : "Region";
+      layer.bindTooltip(name,{sticky:true});
+      layer.on({
+        mouseover: e => e.target.setStyle({weight:3, fillOpacity:0.85}),
+        mouseout:  e => regionsLayer.resetStyle(e.target),
+        click:     e => {
+          const url = feature.properties && feature.properties.url;
+          if(url) window.location.href = url;
+        }
+      });
+    }
+
+    // load regions
+    fetch(URL_REGIONS).then(r=>r.ok ? r.json() : Promise.reject("regions load failed")).then(data=>{
+      regionsLayer = L.geoJSON(data, { style: styleByType, onEachFeature: onEach }).addTo(map);
+      try{ if(regionsLayer.getBounds && !regionsLayer.getBounds().isEmpty()) map.fitBounds(regionsLayer.getBounds(),{padding:[30,30]}); }catch(e){}
+    }).catch(e=>console.error("Fehler beim Laden Regionen:", e));
+
+    // load austria boundaries underlay
+    fetch(URL_AUSTRIA).then(r=>r.json()).then(data=>{
+      L.geoJSON(data, { style: ()=>({color:"#333", weight:1, fillOpacity:0}) }).addTo(map);
+    }).catch(()=>{console.warn("Österreich-GEOJSON konnte nicht geladen werden.")});
+
+    // legend
+    const legend = L.control({position:'bottomright'});
+    legend.onAdd = function(){
+      const d = L.DomUtil.create('div','legend');
+      d.innerHTML = "<strong>Legende</strong>";
+      const add = (c,l)=> d.innerHTML += `<
