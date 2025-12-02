@@ -14,7 +14,7 @@
     .legend { background: white; padding:8px 10px; border-radius:6px; box-shadow:0 1px 6px rgba(0,0,0,0.15); font-size:14px; }
     .legend .item { display:flex; align-items:center; gap:8px; margin-bottom:6px; }
     .legend .swatch { width:18px; height:12px; border-radius:2px; display:inline-block; }
-    /* sichtbare Hover-Kante (wichtig: style-Vorzug per setStyle) */
+    /* sichtbare Hover-Kante */
     .region-hover { weight:3 !important; }
     /* pointer-cursor für interaktive Regionen */
     .leaflet-interactive { cursor: pointer; }
@@ -89,18 +89,12 @@ function styleByType(feature) {
 /* Variablen für Layer, damit resetStyle möglich ist */
 let regionsLayer = null;
 
-/* Hilfsfunktion: sichere URL-Öffnung (öffnet extern in neuem Tab) */
-function openUrlSafe(url) {
+/* Hilfsfunktion: sichere Navigation bei Klick (Standard: gleiche Seite) */
+function navigateToUrl(url) {
   if (!url || typeof url !== 'string' || url.trim() === '') return false;
-  // einfache Heuristik: öffne absolute URLs als neue Tabs; relative URLs ebenfalls
-  try {
-    window.open(url, '_blank', 'noopener');
-    return true;
-  } catch (e) {
-    // fallback: navigate same tab
-    window.location.href = url;
-    return true;
-  }
+  // Standard: im selben Tab navigieren. Wenn du neues Tab willst: use window.open(url, '_blank');
+  window.location.href = url;
+  return true;
 }
 
 /* Interaktion: Tooltip on hover, highlight, click -> URL */
@@ -131,16 +125,15 @@ function onEachRegion(feature, layer) {
     },
     click: function(e) {
       const props = feature.properties || {};
-      // Wenn props.url existiert -> öffne in neuem Tab (sicher)
       if (props.url && props.url.toString().trim().length > 0) {
-        // Falls du stattdessen im gleichen Tab navigieren willst, ersetze openUrlSafe mit:
-        // window.location.href = props.url;
-        openUrlSafe(props.url.toString().trim());
+        // NAVIGATION: im selben Tab. Möchtest du neues Tab, ersetze die Zeile durch:
+        // window.open(props.url.toString().trim(), '_blank', 'noopener');
+        navigateToUrl(props.url.toString().trim());
         return;
       }
       // fallback: slug oder Name
       if (props.slug && props.slug.toString().trim().length > 0) {
-        openUrlSafe('/' + props.slug.toString().trim());
+        navigateToUrl('/' + props.slug.toString().trim());
         return;
       }
       // kein Link vorhanden -> zoome zur Region
@@ -149,6 +142,22 @@ function onEachRegion(feature, layer) {
       }
     }
   });
+}
+
+/* --- Funktion: erzwinge pointer-events auf allen SVG-Pfaden --- */
+function enforcePointerEventsOnPaths() {
+  try {
+    if (!regionsLayer) return;
+    regionsLayer.eachLayer(function(layer) {
+      if (layer && layer._path) {
+        // setze pointer-events und cursor
+        layer._path.style.pointerEvents = 'auto';
+        layer._path.style.cursor = 'pointer';
+      }
+    });
+  } catch (err) {
+    console.warn('enforcePointerEventsOnPaths Fehler:', err);
+  }
 }
 
 /* GeoJSON laden (Regions) */
@@ -175,6 +184,33 @@ fetch(REGIONS_GEOJSON_FILE)
       // kleines invalidateSize, falls Karte in einem flex/hidden container gerendert wurde
       setTimeout(()=>map.invalidateSize(), 250);
     } catch(e){/* ignore */ }
+
+    // --- WICHTIG: apply pointer-events fix unmittelbar nach dem Hinzufügen ---
+    enforcePointerEventsOnPaths();
+
+    // Re-apply bei relevanten map events (Zoom, Move, Layer Änderungen)
+    map.on('zoomend moveend layeradd layerremove', function() {
+      enforcePointerEventsOnPaths();
+    });
+
+    // Falls Leaflet intern das SVG neu schreibt, wollen wir das abfangen
+    // MutationObserver überwacht Änderungen im Overlay-Pane (best-effort)
+    try {
+      const overlayPane = document.querySelector('.leaflet-pane.leaflet-overlay-pane');
+      if (overlayPane) {
+        const mo = new MutationObserver((mutations) => {
+          // kurze Debounce
+          if (window.___pe_timeout) clearTimeout(window.___pe_timeout);
+          window.___pe_timeout = setTimeout(() => {
+            enforcePointerEventsOnPaths();
+          }, 80);
+        });
+        mo.observe(overlayPane, { childList: true, subtree: true, attributes: true, characterData: false });
+      }
+    } catch (e) {
+      console.warn('MutationObserver nicht möglich:', e);
+    }
+
   })
   .catch(err => {
     console.error(err);
@@ -231,7 +267,7 @@ document.addEventListener('keydown', function(e){
     regionsLayer.eachLayer(function(layer){
       if (layer.feature && layer.getBounds && layer.getBounds().contains(center)) {
         const props = layer.feature.properties || {};
-        if (props.url) openUrlSafe(props.url);
+        if (props.url) navigateToUrl(props.url);
       }
     });
   }
