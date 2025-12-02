@@ -4,14 +4,24 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>HAF Übersichtskarte</title>
+
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
   <style>
-    /* Weißer Hintergrund anstatt Basemap */
+    /* Weißer Hintergrund */
     html,body { height:100%; margin:0; background:#ffffff; }
-    #map { width:100%; height:100vh; background:#ffffff; } /* ensure white background */
+    #map { width:100%; height:100vh; background:#ffffff; }
+
+    /* Legend */
     .legend { background: white; padding:8px 10px; border-radius:6px; box-shadow:0 1px 6px rgba(0,0,0,0.15); font-size:14px; }
     .legend .item { display:flex; align-items:center; gap:8px; margin-bottom:6px; }
     .legend .swatch { width:18px; height:12px; border-radius:2px; display:inline-block; }
+
+    /* Wichtig: Tooltips immer ganz oben */
+    .leaflet-tooltip {
+      z-index: 100000 !important;
+      pointer-events: none;
+    }
+
     @media (max-width:700px){ .legend { font-size:13px; padding:6px 8px; } }
   </style>
 </head>
@@ -21,25 +31,30 @@
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script>
 /* === Konfiguration === */
-const REGIONS_GEOJSON_FILE = 'regionen.geojson';        // interaktive Regionen
-const AUSTRIA_GEOJSON_FILE = 'bundeslaender.geojson';  // Hintergrund (komplettes Österreich)
+const REGIONS_GEOJSON_FILE = 'regionen.geojson';
+const AUSTRIA_GEOJSON_FILE = 'bundeslaender.geojson';
 
 /* Farben */
 const COLOR_FORERUNNER = "#7b8ca0";
 const COLOR_FOLLOWER   = "#a1bdda";
 const COLOR_DEFAULT    = "#6c757d";
 
-/* Link candidates */
+/* Link-Felder */
 const LINK_CANDIDATES = ['url','website','link','homepage','href','site','website_url','portal','web','uri','home'];
 
-/* Karte: keine Basemap, Hintergrund weiß */
+/* Karte (kein Basemap) */
 const map = L.map('map', { minZoom: 6, maxZoom: 13, scrollWheelZoom: true }).setView([47.5,13.3],7);
 
 /* Create panes so country is behind regions */
 map.createPane('countryPane');
-map.getPane('countryPane').style.zIndex = 200;  // low: under regions
+map.getPane('countryPane').style.zIndex = 200;  // under regions
 map.createPane('regionsPane');
-map.getPane('regionsPane').style.zIndex = 650;  // higher: above country
+map.getPane('regionsPane').style.zIndex = 650;  // above country
+
+// make sure tooltip pane is above regionsPane
+if (map.getPane('tooltipPane')) {
+  map.getPane('tooltipPane').style.zIndex = 1200;
+}
 
 /* Helpers */
 function openLink(url) {
@@ -51,14 +66,15 @@ function openLink(url) {
   return true;
 }
 
-/* Styles: weights adjusted (country 2, regions 3) */
+/* Styles */
 function austriaStyle(feature) {
   return {
-    color: '#ffffff',      // white boundary
-    weight: 2,             // stroke width for country borders
-    fillColor: '#e1e1e1',  // light gray fill
+    color: '#ffffff',
+    weight: 2,             // country stroke thinner
+    fillColor: '#e1e1e1',
     fillOpacity: 1,
-    interactive: false
+    interactive: false,
+    pane: 'countryPane'
   };
 }
 function styleByType(feature) {
@@ -67,8 +83,8 @@ function styleByType(feature) {
   if (t === 'forerunner') fill = COLOR_FORERUNNER;
   if (t === 'follower')   fill = COLOR_FOLLOWER;
   return {
-    color: '#ffffff',      // white boundary
-    weight: 3,             // stroke width for regions
+    color: '#ffffff',
+    weight: 2,             // region stroke = 2 as requested
     fillColor: fill,
     fillOpacity: 1,
     className: 'region-polygon',
@@ -76,7 +92,7 @@ function styleByType(feature) {
   };
 }
 
-/* --- Load Austria (country) into countryPane and fit bounds --- */
+/* Load Austria (country) first, fit bounds tightly */
 let austriaBounds = null;
 fetch(AUSTRIA_GEOJSON_FILE)
   .then(r => { if (!r.ok) throw new Error('Fehler beim Laden der Bundesländer: ' + r.status); return r.json(); })
@@ -86,16 +102,23 @@ fetch(AUSTRIA_GEOJSON_FILE)
       interactive: false,
       pane: 'countryPane'
     }).addTo(map);
+
     try {
       austriaBounds = bl.getBounds();
-      if (austriaBounds && austriaBounds.isValid && !austriaBounds.isEmpty()) {
-        map.fitBounds(austriaBounds, { padding: [20,20] });
-      }
+      // ensure map size is correct before fitting
+      setTimeout(()=> {
+        try { map.invalidateSize(); } catch(e){}
+        if (austriaBounds && austriaBounds.isValid && !austriaBounds.isEmpty()) {
+          // smaller padding to avoid zooming-out too far
+          map.fitBounds(austriaBounds, { padding: [10,10] });
+        }
+      }, 120);
+      // keep it visible on resize
       window.addEventListener('resize', () => {
         setTimeout(()=> {
           map.invalidateSize();
-          if (austriaBounds) map.fitBounds(austriaBounds, { padding: [20,20] });
-        }, 120);
+          if (austriaBounds) map.fitBounds(austriaBounds, { padding: [10,10] });
+        }, 150);
       });
     } catch (e) { /* ignore */ }
   })
@@ -103,21 +126,21 @@ fetch(AUSTRIA_GEOJSON_FILE)
     console.warn('bundeslaender.geojson konnte nicht geladen werden:', err);
   });
 
-/* --- Regions (interactive) --- */
+/* Regions (interactive) */
 window.regionsLayer = null;
 
-/* onEachFeature */
 function onEachRegion(feature, layer) {
   const type = (feature.properties && feature.properties.type || '').toLowerCase();
   const name = (feature.properties && feature.properties.name) ? feature.properties.name : '(kein Name)';
   let prefix = '';
   if (type === 'forerunner') prefix = 'Forerunner-Region ';
   else if (type === 'follower') prefix = 'Follower-Region ';
-  layer.bindTooltip(prefix + name, { sticky:true, direction:'auto' });
+  // tooltip without colon
+  layer.bindTooltip(prefix + name, { sticky: true, direction: 'auto', pane: 'tooltipPane' });
 
   layer.on({
     mouseover(e) {
-      e.target.setStyle({ weight: 4, fillOpacity: 1 });
+      e.target.setStyle({ weight: 3, fillOpacity: 1 });
       if (!L.Browser.ie && !L.Browser.opera && !L.Browser.edge) e.target.bringToFront();
     },
     mouseout(e) {
@@ -131,14 +154,12 @@ function onEachRegion(feature, layer) {
         }
       }
       if (props.slug && props.slug.toString().trim()) { openLink('/' + props.slug.toString().trim()); return; }
-      if (e.target && e.target.getBounds) map.fitBounds(e.target.getBounds(), { padding: [20,20] });
+      if (e.target && e.target.getBounds) map.fitBounds(e.target.getBounds(), { padding: [10,10] });
     }
   });
 }
 
-/* ensure region layer draws into regionsPane explicitly when creating */
 function createRegionsLayer(data) {
-  // ensure each feature uses region pane (styleByType sets pane via class; here we also set layerPane)
   window.regionsLayer = L.geoJSON(data, {
     style: styleByType,
     onEachFeature: onEachRegion,
@@ -146,7 +167,7 @@ function createRegionsLayer(data) {
   }).addTo(map);
 }
 
-/* enforce pointer-events on regions only */
+/* Ensure pointer-events for regions */
 function enforcePointerEventsOnRegions() {
   try {
     if (!window.regionsLayer) {
@@ -166,7 +187,7 @@ function enforcePointerEventsOnRegions() {
   } catch (err) { console.warn('enforcePointerEventsOnRegions error', err); }
 }
 
-/* DOM fallback on path click (regions only) */
+/* DOM fallback on path click */
 function attachDomFallbackToRegions() {
   try {
     if (!window.regionsLayer || typeof window.regionsLayer.eachLayer !== 'function') return;
@@ -189,7 +210,7 @@ function attachDomFallbackToRegions() {
   } catch (err) { console.warn('attachDomFallbackToRegions error', err); }
 }
 
-/* global path->layer handler for regions only (extra fallback) */
+/* global path->layer handler for regions only */
 (function attachGlobalPathClickHandlerForRegions(){
   const mapEl = document.getElementById('map');
   if (!mapEl) return;
@@ -216,26 +237,20 @@ function attachDomFallbackToRegions() {
   console.log('Global regions-only path->layer click handler attached.');
 })();
 
-/* --- Load regions --- */
+/* Load regions */
 fetch(REGIONS_GEOJSON_FILE)
   .then(r => { if (!r.ok) throw new Error('Fehler beim Laden der Regionen: ' + r.status); return r.json(); })
   .then(data => {
     if (!data || !data.features) throw new Error('Keine Features in Regionen gefunden');
     createRegionsLayer(data);
-
-    // ensure map sizing
     setTimeout(()=>map.invalidateSize(), 200);
-
-    // apply pointer-events & fallback
     enforcePointerEventsOnRegions();
     attachDomFallbackToRegions();
-
     map.on('zoomend moveend layeradd layerremove', function(){
       enforcePointerEventsOnRegions();
       attachDomFallbackToRegions();
     });
-
-    // MutationObserver on overlay-pane
+    // MutationObserver
     const overlay = document.querySelector('.leaflet-pane.leaflet-overlay-pane');
     if (overlay) {
       const mo = new MutationObserver(() => {
@@ -250,19 +265,9 @@ fetch(REGIONS_GEOJSON_FILE)
   })
   .catch(err => {
     console.error('Fehler beim Laden der Regionen:', err);
-    const wrapper = document.getElementById('map');
-    const note = document.createElement('div');
-    note.style.padding = '20px';
-    note.style.color = '#a00';
-    note.style.background = '#fff';
-    note.style.maxWidth = '640px';
-    note.style.margin = '20px auto';
-    note.style.borderRadius = '6px';
-    note.innerText = 'Die Regions-Datei konnte nicht geladen werden. Bitte prüfe, ob "regionen.geojson" im selben Ordner liegt.';
-    wrapper.appendChild(note);
   });
 
-/* Legend (optional) */
+/* Legend */
 const legend = L.control({ position: 'bottomright' });
 legend.onAdd = function(){
   const div = L.DomUtil.create('div','legend');
@@ -285,7 +290,7 @@ legend.onAdd = function(){
 };
 legend.addTo(map);
 
-/* Accessibility: Enter öffnet Link der Region unter Kartenmittelpunkt (best-effort) */
+/* Accessibility: Enter opens link for region under map center */
 document.addEventListener('keydown', function(e){
   if (e.key === 'Enter' && window.regionsLayer) {
     const center = map.getCenter();
