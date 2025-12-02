@@ -89,8 +89,8 @@ function styleByType(feature) {
 }
 
 /* --- Fit bounds settings (iframe-friendly) --- */
-const MAX_FITBOUNDS_ZOOM = 12;   // slightly reduced to avoid over-zooming
-const FIT_PADDING = [6,6];       // very tight pixel padding for a near-border fit
+const MAX_FITBOUNDS_ZOOM = 13;   // maximale erlaubte Zoomstufe (du kannst das anpassen)
+const FIT_PADDING = [0,0];       // **keine** Pixel-Padding -> möglichst tight
 
 let austriaBounds = null;
 fetch(AUSTRIA_GEOJSON_FILE)
@@ -99,20 +99,37 @@ fetch(AUSTRIA_GEOJSON_FILE)
     const bl = L.geoJSON(data, { style: austriaStyle, interactive: false, pane: 'countryPane' }).addTo(map);
     try {
       austriaBounds = bl.getBounds();
-      setTimeout(()=> {
-        try { map.invalidateSize(); } catch(e){}
-        if (austriaBounds && austriaBounds.isValid && !austriaBounds.isEmpty()) {
-          // use animate:false for stable initial render; pass pixel padding and maxZoom
-          map.fitBounds(austriaBounds, { padding: FIT_PADDING, maxZoom: MAX_FITBOUNDS_ZOOM, animate: false });
-        }
-      }, 120);
 
+      // kleine helper-Funktion: setze möglichst tighten Zoom an die Grenzen
+      function fitAustriaTight() {
+        try { map.invalidateSize(); } catch(e){}
+        if (!austriaBounds || !austriaBounds.isValid || austriaBounds.isEmpty()) return;
+
+        // Berechne die größtmögliche Zoom-Stufe, die die Bounds genau füllt (ohne Padding)
+        const bestZoom = map.getBoundsZoom(austriaBounds, false);
+
+        // Begrenze auf MAX_FITBOUNDS_ZOOM, damit wir nicht zu stark hereinzoomen
+        const zoomTo = Math.min(bestZoom, MAX_FITBOUNDS_ZOOM);
+
+        // Setze View exakt auf Zentrum + berechneten Zoom (animate false für stabilen initialen Zustand)
+        map.setView(austriaBounds.getCenter(), zoomTo, { animate: false });
+
+        // Als Fallback/Absicherung: rufe fitBounds ohne Padding auf, aber ohne animate
+        // (manchmal notwendig bei bestimmten iframe-/CSS-Layouts)
+        setTimeout(() => {
+          try {
+            map.fitBounds(austriaBounds, { padding: FIT_PADDING, maxZoom: MAX_FITBOUNDS_ZOOM, animate: false });
+          } catch(e){}
+        }, 20);
+      }
+
+      // initial tight fit (leicht verzögert damit DOM & Layout stabil sind)
+      setTimeout(fitAustriaTight, 150);
+
+      // bei resize erneut genauen Fit setzen
       window.addEventListener('resize', () => {
         setTimeout(()=> {
-          map.invalidateSize();
-          if (austriaBounds && austriaBounds.isValid && !austriaBounds.isEmpty()) {
-            map.fitBounds(austriaBounds, { padding: FIT_PADDING, maxZoom: MAX_FITBOUNDS_ZOOM, animate: false });
-          }
+          fitAustriaTight();
         }, 150);
       });
     } catch (e) { /* ignore */ }
