@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>HAF Übersichtskarte — no jump</title>
+  <title>HAF Übersichtskarte — fixed zoom / no pan</title>
 
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
   <style>
@@ -26,13 +26,10 @@
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script>
 /*
-  Behaviour:
-  - Load AUSTRIA GEOJSON first
-  - Create map only after bounds known -> no initial zoom jump
-  - Keep a small CSS fallback (opacity) to prevent flashes
-  - Transparent tilelayer so Leaflet doesn't add extra whitespace
-  - Load regions after map exists
-  - Click on region opens first matching link property (iframe-safe)
+  Behaviour (überarbeitet):
+  - Karte wird auf berechneten Zoom festgesetzt (minZoom === maxZoom === initialZoom)
+  - Benutzer kann nicht zoomen oder pannen (alle Interaktionen deaktiviert)
+  - Programmgesteuerte view/fit bleibt möglich (für initiale Zentrierung / Reflow)
 */
 
 /* Files */
@@ -97,10 +94,18 @@ function regionStyle(feature){
 function fitTightTo(mapInstance, bounds){
   try{ mapInstance.invalidateSize(); }catch(e){}
   if(!bounds) return;
+  // compute best zoom based on current map size
   const bestZoom = mapInstance.getBoundsZoom(bounds, false);
   const zoomTo = Math.min(bestZoom, MAX_FIT_ZOOM);
+
+  // lock zoom to computed level so users cannot zoom
+  try{
+    if(typeof mapInstance.setMinZoom === 'function') mapInstance.setMinZoom(zoomTo);
+    if(typeof mapInstance.setMaxZoom === 'function') mapInstance.setMaxZoom(zoomTo);
+  }catch(e){}
+
   mapInstance.setView(bounds.getCenter(), zoomTo, { animate:false });
-  // fallback fitBounds for safety in weird layouts
+  // fallback fitBounds for safety in weird layouts (still won't allow user zoom/pan because interactions disabled and min/max zoom equal)
   setTimeout(()=> {
     try{ mapInstance.fitBounds(bounds, { padding: FIT_PADDING, maxZoom: zoomTo, animate:false }); }catch(e){}
   }, 20);
@@ -114,8 +119,18 @@ fetch(AUSTRIA_GEOJSON_FILE)
     const tmpLayer = L.geoJSON(austriaGeo); // not added yet
     const bounds = tmpLayer.getBounds();
 
-    // now create the map (attributionControl false)
-    const map = L.map('map', { minZoom:6, maxZoom:13, attributionControl:false, scrollWheelZoom:true });
+    // now create the map (attributionControl false), BUT disable all user interactions so no panning/zooming possible
+    const map = L.map('map', {
+      attributionControl:false,
+      zoomControl:false,
+      dragging: false,
+      touchZoom: false,
+      scrollWheelZoom: false,
+      doubleClickZoom: false,
+      boxZoom: false,
+      keyboard: false,
+      tap: false
+    });
     // expose globally if other scripts expect window.map
     window.map = map;
 
@@ -132,7 +147,7 @@ fetch(AUSTRIA_GEOJSON_FILE)
     // add austria layer for background (non-interactive)
     const austriaLayer = L.geoJSON(austriaGeo, { style: austriaStyle, pane:'countryPane' }).addTo(map);
 
-    // fit tightly (no jump)
+    // fit tightly (no jump) AND lock zoom/pan
     fitTightTo(map, bounds);
 
     // show map (CSS fade-in)
@@ -164,7 +179,7 @@ fetch(AUSTRIA_GEOJSON_FILE)
         // re-apply tight fit after regions added (keeps final view stable)
         setTimeout(()=> fitTightTo(map, bounds), 40);
 
-        // re-fit on resize
+        // re-fit on resize (programmatic only)
         window.addEventListener('resize', () => {
           if(window.__fit_timeout) clearTimeout(window.__fit_timeout);
           window.__fit_timeout = setTimeout(()=> fitTightTo(map, bounds), 160);
@@ -179,8 +194,8 @@ fetch(AUSTRIA_GEOJSON_FILE)
   })
   .catch(err => {
     console.error('bundeslaender.geojson load failed', err);
-    // fallback: create map anyway so page isn't broken (less ideal)
-    const map = L.map('map', { minZoom:6, maxZoom:13, attributionControl:false });
+    // fallback: create map anyway so page isn't broken (less ideal) - still disable interactions
+    const map = L.map('map', { attributionControl:false, zoomControl:false, dragging:false, touchZoom:false, scrollWheelZoom:false, doubleClickZoom:false, boxZoom:false, keyboard:false, tap:false });
     window.map = map;
     L.tileLayer('data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8z8AIAgMAnwPf4gAAAABJRU5ErkJggg==').addTo(map);
     document.getElementById('map').classList.add('ready');
